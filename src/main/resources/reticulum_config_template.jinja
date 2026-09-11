@@ -1,4 +1,3 @@
----
 # Reticulum server config
 #
 # Qortal settings (settins.json) used for generation of this config:
@@ -49,6 +48,10 @@ interfaces:
   "Default Interface":
     type: AutoInterface
     enabled: true
+    network_name: {{ qortal_network_name }}
+{%- if passphrase %}
+    passphrase: {{ passphrase }}
+{% endif %}
 
 {% if is_reticulum_gateway %}
   # full gateway node with BackboneServerInterface

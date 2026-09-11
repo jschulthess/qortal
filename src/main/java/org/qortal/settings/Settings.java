@@ -704,7 +704,7 @@ public class Settings {
 	 * since a cap under the floor would make the reconnect loop and the pruner fight
 	 * each other.
 	 */
-	private int reticulumMaxDataPeers = 16;
+	private int reticulumMaxDataPeers = 24;
 	/** Maximum number of task executor network threads */
 	private int reticulumMaxNetworkThreadPoolSize = 20;
 	/** Node provides a TCPServerInterface or other "qortal"/"qortaltest" gateway interface */

@@ -710,7 +710,7 @@ public class Settings {
 	/** Node provides a TCPServerInterface or other "qortal"/"qortaltest" gateway interface */
 	private boolean reticulumHasServerInterface = false;
 	/** Number of desired client Interfaces (taken from core server list) */
-	private int reticulumDesiredClientInterfaces = 1;
+	private int reticulumDesiredClientInterfaces = 2;
 	/** Array of core Reticulum server hostname[:port], TCP or Backbone only */
 	private String[] reticulumTcpGatewayServers = new String[]{
 			""

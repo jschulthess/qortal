@@ -117,28 +117,14 @@ final class RNSConfigWriter {
         context.put("os_mac", SystemUtils.IS_OS_MAC ? "true" : "false");
         context.put("os_linux", SystemUtils.IS_OS_LINUX ? "true" : "false");
         context.put("os_name", SystemUtils.OS_NAME);
-        //context.put("os", Map.of(
-        //        "windows", SystemUtils.IS_OS_WINDOWS,
-        //        "mac",     SystemUtils.IS_OS_MAC,
-        //        "linux",   SystemUtils.IS_OS_LINUX,
-        //        "name",    SystemUtils.OS_NAME
-        //));
         context.put("os", System.getProperties().getProperty("os.name").toLowerCase());
-        
+
         log.info("Rendering new Reticulum configuration file from resource {}", RNSCommon.jinjaConfigTemplateName);
         InputStream templateStream = RNSConfigWriter.class.getClassLoader()
                 .getResourceAsStream(RNSCommon.jinjaConfigTemplateName);
         String template = new BufferedReader(new InputStreamReader(templateStream))
                 .lines().parallel().collect(Collectors.joining("\n"));
         String renderedConfig = new Jinjava().render(template, context);
-        //Jinjava jinjava = new Jinjava();
-        //jinjava.getGlobalContext().put("os", Map.of(
-        //        "windows", SystemUtils.IS_OS_WINDOWS,
-        //        "mac",     SystemUtils.IS_OS_MAC,
-        //        "linux",   SystemUtils.IS_OS_LINUX,
-        //        "name",    SystemUtils.OS_NAME
-        //));
-        //String renderedConfig = jinjava.render(template, context);
 
         // Delete any existing config first. Files.write(CREATE, WRITE) does NOT truncate, so
         // regenerating a SHORTER config (e.g. after lowering reticulumDesiredClientInterfaces)

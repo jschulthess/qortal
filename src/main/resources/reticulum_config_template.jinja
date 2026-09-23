@@ -92,10 +92,10 @@ interfaces:
     {% if os == "linux" %}
   "Backbone Client Interface qortal {{ item_fqdn }}":
     type: BackboneClientInterface
-    {% else %}
+    {%- else %}
   "TCP Client Interface qortal {{ item_fqdn }}":
-     type: TCPClientInterface
-    {%- endif -%}
+    type: TCPClientInterface
+    {%- endif %}
     enabled: true
     target_host: {{ item_fqdn }}
     target_port: {{ item_target_port }}
@@ -122,5 +122,8 @@ interfaces:
     target_host: {{ item_fqdn }}
     target_port: {{ item_target_port }}
     network_name: {{ qortal_network_name }}
+{%- if passphrase %}
+    passphrase: {{ passphrase }}
+{% endif %}
   {% endif %}
 {%- endfor -%}

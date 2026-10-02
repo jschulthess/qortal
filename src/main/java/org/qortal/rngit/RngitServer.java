@@ -195,6 +195,17 @@ public class RngitServer {
 
         this.repositories = new RngitRepositories(aliases, access, blocked);
 
+        // Qortal names as groups, served from QDN. Needs Core's repository, so a
+        // node run without one (the standalone live-test node) serves local groups only.
+        if (config.getBool("qdn", "enabled", true)) {
+            if (qdnAvailable()) {
+                repositories.setQdnGateway(new RngitQdnGateway(configDir.resolve("qdn-cache")));
+                log.info("rngit QDN gateway enabled: every registered name is a repository group");
+            } else {
+                log.info("rngit QDN gateway disabled: no Qortal repository available");
+            }
+        }
+
         for (String groupName : config.section("repositories").keySet()) {
             String raw = config.getString("repositories", groupName, "");
             Path groupPath = Path.of(raw.startsWith("~") ? System.getProperty("user.home") + raw.substring(1) : raw);
@@ -203,6 +214,14 @@ public class RngitServer {
             } else {
                 repositories.loadGroup(groupName, groupPath);
             }
+        }
+    }
+
+    private static boolean qdnAvailable() {
+        try (org.qortal.repository.Repository repository = org.qortal.repository.RepositoryManager.getRepository()) {
+            return repository != null;
+        } catch (Exception e) {
+            return false;
         }
     }
 

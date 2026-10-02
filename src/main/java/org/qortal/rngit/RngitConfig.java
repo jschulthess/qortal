@@ -46,6 +46,12 @@ public final class RngitConfig {
             "[access]",
             "  # By default no permissions are granted for anything.",
             "  # public = r:all, w:9710b86ba12c42d1d8f30f74fe509286",
+            "",
+            "[qdn]",
+            "  # Serve every registered Qortal name as a group of repositories",
+            "  # held on QDN: rns://<this node>/<name>/<repo>. Groups configured",
+            "  # above take precedence over a name spelled the same.",
+            "  enabled = yes",
             "");
 
     /** The section holding keys that appear before any section header. */

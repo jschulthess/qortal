@@ -65,6 +65,8 @@ public final class RngitRepositories {
     }
 
     private final Map<String, Group> groups = new ConcurrentHashMap<>();
+    /** Serves Qortal names as groups when set; local groups take precedence. */
+    private volatile RngitQdnGateway qdn;
     private final Map<String, String> aliases;
     private final Map<String, List<String>> accessConfig;
     private final Set<String> blockedIdentities;
@@ -81,13 +83,40 @@ public final class RngitRepositories {
         this.blockedIdentities = Set.copyOf(blockedIdentities);
     }
 
+    void setQdnGateway(RngitQdnGateway qdn) {
+        this.qdn = qdn;
+    }
+
+    /** A configured group, else the QDN group of a registered name, else null. */
     public Group getGroup(String name) {
-        return name == null ? null : groups.get(name);
+        if (name == null) return null;
+        Group local = groups.get(name);
+        if (local != null) return local;
+        RngitQdnGateway gateway = this.qdn;
+        return gateway == null ? null : gateway.group(name);
     }
 
     public Repository getRepository(String groupName, String repositoryName) {
-        Group group = getGroup(groupName);
-        return group == null || repositoryName == null ? null : group.repositories.get(repositoryName);
+        if (groupName == null || repositoryName == null) return null;
+        Group local = groups.get(groupName);
+        if (local != null) return local.repositories.get(repositoryName);
+        RngitQdnGateway gateway = this.qdn;
+        return gateway == null ? null : gateway.repository(groupName, repositoryName);
+    }
+
+    /** Whether a group comes from QDN rather than the config. */
+    public boolean isQdnGroup(String groupName) {
+        return groupName != null && !groups.containsKey(groupName) && qdn != null && getGroup(groupName) != null;
+    }
+
+    static Group qdnGroup(String name, Path path, PermissionSet permissions) {
+        Group group = new Group(name, path);
+        group.permissions = permissions;
+        return group;
+    }
+
+    static Repository qdnRepository(String name, String group, Path path, PermissionSet permissions) {
+        return new Repository(name, group, path, permissions);
     }
 
     public Map<String, Group> getGroups() {

@@ -46,12 +46,21 @@ public final class RngitRepositories {
         private final String group;
         private final Path path;
         private volatile PermissionSet permissions;
+        /** Upstream URL when this repository is a fork, else null ({@code __is_fork}). */
+        private final String forkSource;
+        /** Upstream URL when this repository is a mirror, else null ({@code __is_mirror}). */
+        private final String mirrorSource;
 
         Repository(String name, String group, Path path, PermissionSet permissions) {
             this.name = name;
             this.group = group;
             this.path = path;
             this.permissions = permissions;
+
+            String type = RngitGit.rngitType(path);
+            String source = type == null ? null : RngitGit.upstreamSource(path);
+            this.forkSource = "fork".equals(type) ? source : null;
+            this.mirrorSource = "mirror".equals(type) ? source : null;
         }
     }
 

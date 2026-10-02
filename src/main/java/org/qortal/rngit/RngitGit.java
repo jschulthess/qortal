@@ -9,6 +9,7 @@ import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.lib.RefUpdate;
 import org.eclipse.jgit.lib.Repository;
+import org.eclipse.jgit.lib.StoredConfig;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevObject;
 import org.eclipse.jgit.revwalk.RevWalk;
@@ -264,6 +265,130 @@ public final class RngitGit {
             }
         } catch (Exception e) {
             return Result.fail(e.toString());
+        }
+    }
+
+    /**
+     * {@code git fetch <bundle> +refs/*:refs/*}: applies every ref in a bundle,
+     * forced, as an upstream fetch for a fork or mirror does.
+     */
+    public static Result applyBundleAllRefs(Path path, Path bundleFile) {
+        try (Repository repository = open(path);
+             InputStream in = new BufferedInputStream(Files.newInputStream(bundleFile));
+             Transport transport = new TransportBundleStream(repository, new URIish(bundleFile.toUri().toString()), in)) {
+            FetchResult result = transport.fetch(NullProgressMonitor.INSTANCE, List.of(new RefSpec("+refs/*:refs/*")));
+            for (TrackingRefUpdate update : result.getTrackingRefUpdates()) {
+                switch (update.getResult()) {
+                    case NEW: case FAST_FORWARD: case FORCED: case NO_CHANGE:
+                        break;
+                    default:
+                        return Result.fail("Ref update " + update.getLocalName() + " " + update.getResult());
+                }
+            }
+            return Result.ok();
+        } catch (Exception e) {
+            return Result.fail(e.toString());
+        }
+    }
+
+    /** {@code git fetch <url> +refs/*:refs/*} over http(s), via JGit. */
+    public static Result fetchHttp(Path path, String url) {
+        // Git.wrap leaves the repository open on close, so it is closed here
+        try (Repository repository = open(path); Git git = Git.wrap(repository)) {
+            git.fetch().setRemote(url).setRefSpecs(new RefSpec("+refs/*:refs/*")).setTimeout(300).call();
+            return Result.ok();
+        } catch (Exception e) {
+            return Result.fail(e.getMessage());
+        }
+    }
+
+    /** The branch a remote's HEAD points to ({@code git ls-remote --symref <url> HEAD}), or null. */
+    public static String remoteHeadHttp(String url) {
+        try {
+            Map<String, Ref> refs = Git.lsRemoteRepository().setRemote(url).setTimeout(30).callAsMap();
+            Ref head = refs.get(Constants.HEAD);
+            if (head != null && head.isSymbolic() && head.getTarget().getName().startsWith(Constants.R_HEADS)) {
+                return head.getTarget().getName();
+            }
+        } catch (Exception e) {
+            log.warn("Could not query remote HEAD from {}: {}", url, e.getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * {@code __update_head_to_source_default}: point HEAD at the upstream's
+     * default branch if it exists locally, else at the first local branch.
+     */
+    public static boolean updateHead(Path path, String targetBranch) {
+        try (Repository repository = open(path)) {
+            String target = targetBranch;
+            if (target != null && repository.exactRef(target) == null) {
+                log.warn("Remote default branch {} not found locally, using fallback", target);
+                target = null;
+            }
+            if (target == null) {
+                List<Ref> branches = new ArrayList<>(repository.getRefDatabase().getRefsByPrefix(Constants.R_HEADS));
+                if (branches.isEmpty()) return false;
+                branches.sort(Comparator.comparing(Ref::getName));
+                target = branches.get(0).getName();
+            }
+            RefUpdate.Result result = repository.updateRef(Constants.HEAD).link(target);
+            return result == RefUpdate.Result.NEW || result == RefUpdate.Result.FORCED || result == RefUpdate.Result.NO_CHANGE;
+        } catch (Exception e) {
+            log.error("Error updating HEAD of {}", path, e);
+            return false;
+        }
+    }
+
+    // The rngit repository metadata lives in the repository's git config,
+    // where the reference keeps it: repository.rngit.type,
+    // repository.rngit.upstream.source and repository.rngit.upstream.sync.
+
+    /** {@code fork} or {@code mirror}, or null for a plain repository. */
+    public static String rngitType(Path path) {
+        try (Repository repository = open(path)) {
+            return repository.getConfig().getString("repository", "rngit", "type");
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    public static String upstreamSource(Path path) {
+        try (Repository repository = open(path)) {
+            return repository.getConfig().getString("repository", "rngit.upstream", "source");
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Unix time of the last successful upstream sync, or 0. */
+    public static long upstreamSynced(Path path) {
+        try (Repository repository = open(path)) {
+            return repository.getConfig().getLong("repository", "rngit.upstream", "sync", 0);
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    public static void setUpstream(Path path, String type, String source) throws IOException {
+        try (Repository repository = open(path)) {
+            StoredConfig config = repository.getConfig();
+            config.setString("repository", "rngit", "type", type);
+            config.setString("repository", "rngit.upstream", "source", source);
+            config.save();
+        }
+    }
+
+    public static boolean setUpstreamSynced(Path path) {
+        try (Repository repository = open(path)) {
+            StoredConfig config = repository.getConfig();
+            config.setLong("repository", "rngit.upstream", "sync", System.currentTimeMillis() / 1000);
+            config.save();
+            return true;
+        } catch (Exception e) {
+            log.error("Could not set upstream sync time for {}", path, e);
+            return false;
         }
     }
 

@@ -128,4 +128,48 @@ class RngitGitTest {
         assertTrue(RngitGit.deleteRef(server, "refs/heads/feature").ok);
         assertNull(RngitGit.resolveRef(server, "refs/heads/feature"));
     }
+
+    @Test
+    void upstreamMetadataRoundTripsThroughGitConfig() throws Exception {
+        assertNull(RngitGit.rngitType(server));
+        RngitGit.setUpstream(server, "mirror", "https://example.invalid/repo.git");
+        assertTrue(RngitGit.setUpstreamSynced(server));
+
+        assertEquals("mirror", RngitGit.rngitType(server));
+        assertEquals("https://example.invalid/repo.git", RngitGit.upstreamSource(server));
+        assertTrue(RngitGit.upstreamSynced(server) > 1_700_000_000L);
+        assertTrue(Files.readString(server.resolve("config")).contains("[repository \"rngit.upstream\"]"),
+                "stored where git config repository.rngit.upstream.source finds it");
+    }
+
+    @Test
+    void allRefsBundleAppliesForcedAndHeadFollowsUpstream() throws Exception {
+        try (Git git = Git.open(work.toFile())) {
+            git.branchCreate().setName("main").setStartPoint(first).call();
+        }
+        Path bundle = bundleFrom(work.resolve(".git"), List.of("refs/heads/master", "refs/heads/main"), List.of());
+        assertTrue(RngitGit.applyBundleAllRefs(server, bundle).ok);
+        assertEquals(second.name(), RngitGit.resolveRef(server, "refs/heads/master"));
+        assertEquals(first.name(), RngitGit.resolveRef(server, "refs/heads/main"));
+
+        assertTrue(RngitGit.updateHead(server, "refs/heads/main"));
+        assertTrue(RngitGit.listRefs(server).endsWith("@refs/heads/main HEAD\n"));
+
+        assertTrue(RngitGit.updateHead(server, "refs/heads/missing"), "unknown upstream HEAD falls back");
+        assertTrue(RngitGit.listRefs(server).endsWith("@refs/heads/main HEAD\n"), "to the first branch by name");
+    }
+
+    @Test
+    void sourceUrlSchemes() {
+        assertTrue(RngitUpstream.isAllowedSource("https://github.com/x/y"));
+        assertTrue(RngitUpstream.isAllowedSource("RNS://0123456789abcdef0123456789abcdef/g/r"));
+        assertTrue(RngitUpstream.isAllowedSource("ssh://git@host/x"));
+        assertFalse(RngitUpstream.isAllowedSource("file:///etc"));
+        assertFalse(RngitUpstream.isAllowedSource("git@host:x/y"), "scp-like ssh has no scheme, as in the reference");
+
+        assertEquals(List.of("0123456789abcdef0123456789abcdef", "g", "r"),
+                List.of(RngitClient.parseRnsUrl("rns://0123456789abcdef0123456789abcdef/g/r")));
+        assertNull(RngitClient.parseRnsUrl("rns://short/g/r"));
+        assertNull(RngitClient.parseRnsUrl("rns://0123456789abcdef0123456789abcdef/g"));
+    }
 }

@@ -29,9 +29,11 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 
 import static org.apache.commons.codec.binary.Hex.encodeHexString;
@@ -42,7 +44,9 @@ import static org.qortal.rngit.RngitProtocol.*;
  * destination ({@code server.py} {@code ReticulumGitNode}).
  * <p>
  * Implements the git operations ({@code /git/list}, {@code /git/fetch},
- * {@code /git/push}, {@code /git/delete}) and {@code /git/create}. Responses
+ * {@code /git/push}, {@code /git/delete}), {@code /git/create}, and forks,
+ * mirrors and upstream sync ({@code /git/fork}, {@code /git/mirror},
+ * {@code /git/sync}) with periodic mirror syncing. Responses
  * match the reference byte for byte, including its choice of "Not found" over
  * "Not allowed" where revealing a repository's existence would leak it.
  * <p>
@@ -55,11 +59,15 @@ import static org.qortal.rngit.RngitProtocol.*;
 public class RngitServer {
 
     static final long JOBS_INTERVAL_SECONDS = 5;
+    static final long SYNC_CHECK_INTERVAL_MS = 15 * 60_000L;
+    static final long DEFAULT_MIRROR_INTERVAL_MS = 24 * 3_600_000L;
 
     @Getter
     private final Path configDir;
     @Getter
     private Identity identity;
+    /** Identifies this node to other rngit nodes when it fetches from an rns:// upstream. */
+    private Identity clientIdentity;
     @Getter
     private Destination destination;
     @Getter
@@ -67,6 +75,10 @@ public class RngitServer {
     private String nodeName = "Anonymous Git Node";
     private long announceIntervalMillis = 0;
     private long lastAnnounce = 0;
+    private long mirrorIntervalMillis = DEFAULT_MIRROR_INTERVAL_MS;
+    private long lastSyncCheck = System.currentTimeMillis();
+    /** Held while the periodic mirror sync runs, so two never overlap. */
+    private final ReentrantLock syncLock = new ReentrantLock();
 
     /** Identified links, by link id: the reference's {@code active_links}. */
     private final Map<String, Link> activeLinks = new ConcurrentHashMap<>();
@@ -74,6 +86,8 @@ public class RngitServer {
     private final Map<String, List<Path>> linkTempFiles = new ConcurrentHashMap<>();
 
     private ScheduledExecutorService jobs;
+    /** Runs periodic mirror syncs, which can take long, off the jobs thread. */
+    private ExecutorService syncs;
 
     public RngitServer(Path configDir) {
         this.configDir = configDir;
@@ -86,6 +100,7 @@ public class RngitServer {
     public void start() throws IOException {
         RngitConfig config = RngitConfig.loadOrCreate(configDir.resolve("config"));
         this.identity = loadOrCreateIdentity(configDir.resolve("repositories_identity"));
+        this.clientIdentity = loadOrCreateIdentity(configDir.resolve("client_identity"));
         applyConfig(config);
 
         this.destination = new Destination(identity, Direction.IN, DestinationType.SINGLE, APP_NAME, ASPECT);
@@ -99,6 +114,11 @@ public class RngitServer {
             return t;
         });
         this.jobs.scheduleWithFixedDelay(this::runJobs, JOBS_INTERVAL_SECONDS, JOBS_INTERVAL_SECONDS, TimeUnit.SECONDS);
+        this.syncs = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "rngit-mirror-sync");
+            t.setDaemon(true);
+            return t;
+        });
 
         log.info("Reticulum Git Node \"{}\" listening on <{}>", nodeName, encodeHexString(destination.getHash()));
     }
@@ -106,6 +126,9 @@ public class RngitServer {
     public void shutdown() {
         if (jobs != null) {
             jobs.shutdownNow();
+        }
+        if (syncs != null) {
+            syncs.shutdownNow();
         }
         for (String linkId : new ArrayList<>(linkTempFiles.keySet())) {
             cleanupLink(linkId);
@@ -146,6 +169,9 @@ public class RngitServer {
 
         this.nodeName = config.getString("rngit", "node_name", nodeName);
         this.announceIntervalMillis = config.getInt("rngit", "announce_interval", 0) * 60_000L;
+        if (config.getString("rngit", "mirror_interval", null) != null) {
+            this.mirrorIntervalMillis = Math.max(config.getInt("rngit", "mirror_interval", 24), 0) * 3_600_000L;
+        }
 
         Set<String> blocked = new HashSet<>();
         for (String entry : config.getList("rngit", "blocked_identities")) {
@@ -177,6 +203,9 @@ public class RngitServer {
         register(PATH_PUSH, this::handlePush);
         register(PATH_DELETE, this::handleDelete);
         register(PATH_CREATE, this::handleCreate);
+        register(PATH_FORK, request -> handleRemoteClone(request, "fork"));
+        register(PATH_MIRROR, request -> handleRemoteClone(request, "mirror"));
+        register(PATH_SYNC, this::handleSync);
     }
 
     private void register(String path, Function<Request, Response> handler) {
@@ -224,6 +253,11 @@ public class RngitServer {
                 log.debug("Announcing repositories destination");
                 destination.announce(nodeName.getBytes(StandardCharsets.UTF_8));
                 lastAnnounce = now;
+            }
+
+            if (mirrorIntervalMillis > 0 && now > lastSyncCheck + SYNC_CHECK_INTERVAL_MS) {
+                lastSyncCheck = now;
+                syncs.submit(this::syncMirrors);
             }
 
             for (Map.Entry<String, Link> entry : new ArrayList<>(activeLinks.entrySet())) {
@@ -547,10 +581,7 @@ public class RngitServer {
             Files.createDirectories(repositoryPath);
             RngitGit.initBare(repositoryPath);
 
-            Path allowed = Path.of(repositoryPath + ".allowed");
-            Path tmpAllowed = Path.of(allowed + ".tmp");
-            Files.writeString(tmpAllowed, REPO_CREATE_PERMS_TEMPLATE.replace("{IDENTITY_HASH}", remote), StandardCharsets.UTF_8);
-            Files.move(tmpAllowed, allowed, StandardCopyOption.ATOMIC_MOVE);
+            writeCreatorPermissions(repositoryPath, remote);
 
             if (!repositories.loadRepository(group, repositoryPath)) {
                 log.error("Repository {} created, but runtime loading failed", repositoryPath);
@@ -563,6 +594,199 @@ public class RngitServer {
             deleteRecursively(repositoryPath);
             return result(RES_REMOTE_FAIL, "Could not initialize repository");
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Forks, mirrors and upstream sync
+
+    /** {@code _handle_remote_clone}: a new repository fetched from an upstream URL. */
+    Response handleRemoteClone(Request request, String repoType) {
+        if (!activeLinks.containsKey(encodeHexString(request.getLinkId()))) {
+            return result(RES_DISALLOWED, "Not identified");
+        }
+        Map<Object, Object> data = requestMap(request);
+        Response refused = precheck(repoType.equals("fork") ? "Fork" : "Mirror", request, data);
+        if (refused != null) return refused;
+
+        Object source = data.get("source");
+        if (source == null || "".equals(source)) return result(RES_INVALID_REQ, "No source specified");
+        if (!(source instanceof String)) return result(RES_INVALID_REQ, "Invalid source URL");
+        String sourceUrl = (String) source;
+        if (!RngitUpstream.isAllowedSource(sourceUrl)) return result(RES_DISALLOWED, "Prohibited source URL");
+
+        String[] path = parseRepositoryPath(intKey(data, IDX_REPOSITORY));
+        if (path[0] == null || path[1] == null) return result(RES_INVALID_REQ, "Invalid request");
+        Group group = repositories.getGroup(path[0]);
+        if (group == null) return result(RES_NOT_FOUND, "Not found");
+
+        String remote = remoteHash(request);
+        boolean readAccess = repositories.resolveGroupPermission(remote, path[0], Permission.READ);
+        boolean createAccess = repositories.resolveGroupPermission(remote, path[0], Permission.CREATE);
+        if (!Files.exists(group.getPath())) return result(RES_NOT_FOUND, "Not found");
+        if (!createAccess) {
+            return readAccess ? result(RES_DISALLOWED, "Not allowed") : result(RES_NOT_FOUND, "Not found");
+        }
+
+        Path finalPath = group.getPath().resolve(path[1]).normalize();
+        if (!finalPath.getParent().equals(group.getPath().normalize())) return result(RES_INVALID_REQ, "Invalid request");
+        if (repositories.getRepository(path[0], path[1]) != null || Files.exists(finalPath)) {
+            boolean existingRead = repositories.resolvePermission(remote, path[0], path[1], Permission.READ);
+            return existingRead ? result(RES_DISALLOWED, "Repository already exists") : result(RES_NOT_FOUND, "Not found");
+        }
+
+        Path tmp = null;
+        try {
+            log.info("{} {} to {}/{} for {}", repoType.equals("fork") ? "Forking" : "Mirroring", sourceUrl, path[0], path[1], remote);
+            tmp = Files.createTempDirectory("rngit-clone-");
+            Path tempRepository = tmp.resolve(path[1]);
+            Files.createDirectories(tempRepository);
+            try {
+                RngitGit.initBare(tempRepository);
+            } catch (Exception e) {
+                log.error("Failed to initialize bare repository at {}", tempRepository, e);
+                return result(RES_REMOTE_FAIL, "Failed to initialize repository");
+            }
+
+            RngitUpstream.Fetched fetched = RngitUpstream.fetch(tempRepository, sourceUrl, clientIdentity);
+            if (!fetched.ok) {
+                log.error("Failed to fetch from {}: {}", sourceUrl, fetched.error);
+                return result(RES_REMOTE_FAIL, "Failed to fetch from source: " + fetched.error);
+            }
+            if (!RngitGit.updateHead(tempRepository, fetched.headBranch)) {
+                log.error("Failed to update HEAD for repository cloned from {}", sourceUrl);
+            }
+
+            try {
+                RngitGit.setUpstream(tempRepository, repoType, sourceUrl);
+            } catch (IOException e) {
+                return result(RES_REMOTE_FAIL, "Failed to configure repository type: " + e.getMessage());
+            }
+            if (!RngitGit.setUpstreamSynced(tempRepository)) {
+                return result(RES_REMOTE_FAIL, "Failed to configure repository type: could not record sync time");
+            }
+
+            try {
+                writeCreatorPermissions(finalPath, remote);
+            } catch (IOException e) {
+                log.error("Could not set default repository permissions for {}/{}", path[0], path[1], e);
+                return result(RES_REMOTE_FAIL, "Could not initialize repository");
+            }
+
+            try {
+                moveDirectory(tempRepository, finalPath);
+            } catch (IOException e) {
+                log.warn("Failed to deploy fetched repository to group directory", e);
+                return result(RES_REMOTE_FAIL, "Could not write repository");
+            }
+
+            if (!repositories.loadRepository(group, finalPath)) {
+                log.error("Repository {} created, but runtime loading failed", finalPath);
+                deleteRecursively(finalPath);
+                return result(RES_REMOTE_FAIL, "Failed to register repository");
+            }
+            log.info("Repository {}/{} {}ed successfully from {}", path[0], path[1], repoType, sourceUrl);
+            return ok();
+        } catch (Exception e) {
+            log.error("Error while {}ing repository {}/{}", repoType, path[0], path[1], e);
+            deleteRecursively(finalPath);
+            return result(RES_REMOTE_FAIL, "Remote error");
+        } finally {
+            if (tmp != null) deleteRecursively(tmp);
+        }
+    }
+
+    /** {@code handle_sync}: fetch a fork's or mirror's upstream now. */
+    Response handleSync(Request request) {
+        Map<Object, Object> data = requestMap(request);
+        Response refused = precheck("Upstream sync", request, data);
+        if (refused != null) return refused;
+
+        String[] path = parseRepositoryPath(intKey(data, IDX_REPOSITORY));
+        String remote = remoteHash(request);
+        if (!repositories.resolvePermission(remote, path[0], path[1], Permission.READ)) return result(RES_NOT_FOUND, "Not found");
+        if (!repositories.resolvePermission(remote, path[0], path[1], Permission.WRITE)) return result(RES_DISALLOWED, "Not allowed");
+
+        Repository repository = repositories.getRepository(path[0], path[1]);
+        if (repository.getMirrorSource() != null) {
+            return syncUpstream(repository, true) ? ok() : result(RES_REMOTE_FAIL, "Mirror sync failed");
+        } else if (repository.getForkSource() != null) {
+            return syncUpstream(repository, false) ? ok() : result(RES_REMOTE_FAIL, "Fork sync failed");
+        }
+        return result(RES_INVALID_REQ, "Repository is neither fork nor mirror");
+    }
+
+    /**
+     * {@code __sync_mirror} / {@code __sync_fork}. A mirror follows the
+     * upstream's HEAD; a fork keeps the HEAD its maintainer chose.
+     */
+    boolean syncUpstream(Repository repository, boolean mirror) {
+        String source = mirror ? repository.getMirrorSource() : repository.getForkSource();
+        String label = repository.getGroup() + "/" + repository.getName();
+        log.info("Syncing {} {} from {}", mirror ? "mirror" : "fork", label, source);
+
+        synchronized (repository) {
+            RngitUpstream.Fetched fetched = RngitUpstream.fetch(repository.getPath(), source, clientIdentity);
+            if (!fetched.ok) {
+                log.error("Failed to sync {} from {}: {}", label, source, fetched.error);
+                return false;
+            }
+            if (mirror && !RngitGit.updateHead(repository.getPath(), fetched.headBranch)) {
+                log.warn("Failed to update HEAD while syncing mirror {}", label);
+            }
+            if (!RngitGit.setUpstreamSynced(repository.getPath())) {
+                log.warn("Synced {} but could not update its sync timestamp", label);
+            }
+        }
+        log.info("{} synced successfully from {}", label, source);
+        return true;
+    }
+
+    /** {@code __sync_mirrors}: every mirror whose last sync is older than the mirror interval. */
+    void syncMirrors() {
+        if (!syncLock.tryLock()) return;
+        try {
+            long nowSeconds = System.currentTimeMillis() / 1000;
+            for (Group group : repositories.getGroups().values()) {
+                for (Repository repository : group.getRepositories().values()) {
+                    if (repository.getMirrorSource() != null
+                            && nowSeconds > RngitGit.upstreamSynced(repository.getPath()) + mirrorIntervalMillis / 1000) {
+                        syncUpstream(repository, true);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.error("Could not sync mirrors", e);
+        } finally {
+            syncLock.unlock();
+        }
+    }
+
+    private static void writeCreatorPermissions(Path repositoryPath, String creatorHashHex) throws IOException {
+        Path allowed = Path.of(repositoryPath + ".allowed");
+        Path tmpAllowed = Path.of(allowed + ".tmp");
+        Files.writeString(tmpAllowed, REPO_CREATE_PERMS_TEMPLATE.replace("{IDENTITY_HASH}", creatorHashHex), StandardCharsets.UTF_8);
+        Files.move(tmpAllowed, allowed, StandardCopyOption.ATOMIC_MOVE);
+    }
+
+    /** {@code shutil.move}: a rename, or a copy and delete across file systems. */
+    private static void moveDirectory(Path source, Path target) throws IOException {
+        try {
+            Files.move(source, target, StandardCopyOption.ATOMIC_MOVE);
+            return;
+        } catch (IOException e) {
+            log.debug("Rename of {} to {} failed, copying instead: {}", source, target, e.getMessage());
+        }
+        try (var walk = Files.walk(source)) {
+            for (Path p : (Iterable<Path>) walk::iterator) {
+                Path dest = target.resolve(source.relativize(p).toString());
+                if (Files.isDirectory(p)) Files.createDirectories(dest);
+                else Files.copy(p, dest, StandardCopyOption.COPY_ATTRIBUTES);
+            }
+        } catch (IOException e) {
+            deleteRecursively(target);
+            throw e;
+        }
+        deleteRecursively(source);
     }
 
     private static void deleteRecursively(Path path) {

@@ -16,8 +16,16 @@
 #   5  alice: push a branch, then delete it        -> ref created, then removed
 #   6  alice: rngit create public/repo again       -> "already exists"
 #   7  bob:   rngit create public/other            -> refused, nothing created
+#   8  alice: rngit mirror http://.../upstream.git   -> mirror, HEAD follows upstream (main)
+#   9  alice: rngit fork rns://<python node>/...     -> fork from a stock Python rngit node
+#  10  upstream advances; alice: rngit sync          -> fork picks up the new commit
+#  11  bob:   rngit sync                             -> refused
+#  12  alice: rngit fork file:///...                 -> "Prohibited source URL"
 #
 # Usage:  ./run.sh       (RNS_SRC defaults to ~/git/Reticulum)
+#         RETICULUM_CLASSES=~/git/reticulum-network-stack-own/target/classes ./run.sh
+#                        runs against a local library build instead of the
+#                        jitpack release in Core's pom
 #
 # Everything runs on 127.0.0.1:42508. No external network is touched.
 
@@ -52,6 +60,7 @@ echo "Reference RNS: $(python3 -c 'import RNS._version as v; print(v.__version__
 (cd "$CORE" && mvn -o -q test-compile -DskipJUnitTests=true) || { echo "FAIL: test-compile"; exit 1; }
 (cd "$CORE" && mvn -o -q dependency:build-classpath -Dmdep.outputFile="$WORK/classpath.txt") || { echo "FAIL: classpath"; exit 1; }
 CP="$(cat "$WORK/classpath.txt"):$CORE/target/classes:$CORE/target/test-classes"
+[[ -n "${RETICULUM_CLASSES:-}" ]] && CP="$RETICULUM_CLASSES:$CP" && echo "Reticulum library: $RETICULUM_CLASSES"
 
 # The stock client entry points, exactly as RNS installs them
 for cmd in rngit git-remote-rns; do
@@ -92,6 +101,29 @@ cat > "$WORK/rngit/config" <<EOF
   public = r:all, c:alice
 EOF
 
+# --- Upstreams for the fork and mirror steps --------------------------------
+# An http upstream: a bare repository served with git's dumb-http protocol
+UP="$WORK/upstream/upstream.git"
+git init -q -b main "$WORK/upstream/src"
+echo "upstream" > "$WORK/upstream/src/UP.md"
+git -C "$WORK/upstream/src" add . && git -C "$WORK/upstream/src" commit -q -m "upstream commit"
+git -C "$WORK/upstream/src" branch side
+git clone -q --bare "$WORK/upstream/src" "$UP"
+git -C "$UP" update-server-info
+HTTP_PORT=42518
+(cd "$WORK/upstream" && exec python3 -m http.server "$HTTP_PORT" --bind 127.0.0.1) > "$WORK/http.log" 2>&1 &
+PIDS+=($!)
+
+# An rns:// upstream: a stock Python rngit node, connected to the Java node
+mkdir -p "$WORK/pynode/groups/native" "$WORK/pynode/rns" "$WORK/pynode/rngit"
+git clone -q --bare "$WORK/upstream/src" "$WORK/pynode/groups/native/src"
+printf '%s\n' "[reticulum]" "  enable_transport = False" "  share_instance = No" \
+    "[logging]" "  loglevel = 4" "[interfaces]" "  [[to java node]]" \
+    "    type = TCPClientInterface" "    interface_enabled = True" \
+    "    target_host = 127.0.0.1" "    target_port = 42508" > "$WORK/pynode/rns/config"
+printf '%s\n' "[rngit]" "  announce_interval = 1" "[repositories]" \
+    "  native = $WORK/pynode/groups/native" "[access]" "  native = r:all" > "$WORK/pynode/rngit/config"
+
 as() {  # as <who> <command...>: run a client command with that identity
     local who="$1"; shift
     RNGIT_CONFIG="$WORK/$who" "$@"
@@ -110,7 +142,13 @@ for _ in $(seq 1 60); do
 done
 [[ -n "$DEST" ]] || { echo "FAIL: server did not start"; tail -30 "$WORK/server.log"; exit 1; }
 echo "Java rngit destination: $DEST"
-sleep 4
+
+PYDEST="$(rngit --config "$WORK/pynode/rngit" --rnsconfig "$WORK/pynode/rns" -p 2>/dev/null \
+    | grep "Repositories Destination" | grep -oE '[0-9a-f]{32}')"
+timeout 900 rngit --config "$WORK/pynode/rngit" --rnsconfig "$WORK/pynode/rns" > "$WORK/pynode.log" 2>&1 &
+PIDS+=($!)
+echo "Python rngit destination: $PYDEST"
+sleep 8
 URL="rns://$DEST/public/repo"
 REPO="$WORK/groups/public/repo"
 
@@ -204,9 +242,69 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+say "8: alice mirrors an http upstream"
+MIRROR="$WORK/groups/public/httpmirror"
+as alice rngit mirror --config "$WORK/alice" --rnsconfig "$RNS_CONFIG" \
+    "http://127.0.0.1:$HTTP_PORT/upstream.git" "rns://$DEST/public/httpmirror" > "$WORK/8.log" 2>&1
+if [[ "$(git -C "$MIRROR" rev-parse refs/heads/main 2>/dev/null)" == "$(git -C "$UP" rev-parse refs/heads/main)" \
+      && -n "$(git -C "$MIRROR" rev-parse --verify -q refs/heads/side)" \
+      && "$(git -C "$MIRROR" symbolic-ref HEAD)" == "refs/heads/main" \
+      && "$(git -C "$MIRROR" config repository.rngit.type)" == "mirror" ]]; then
+    pass "all branches mirrored, HEAD -> main, recorded as mirror"
+else
+    sed 's/^/  | /' "$WORK/8.log" | tail -5; fail "http mirror"
+fi
+
+# ---------------------------------------------------------------------------
+say "9: alice forks from the Python rngit node"
+FORK="$WORK/groups/public/rnsfork"
+as alice rngit fork --config "$WORK/alice" --rnsconfig "$RNS_CONFIG" \
+    "rns://$PYDEST/native/src" "rns://$DEST/public/rnsfork" > "$WORK/9.log" 2>&1
+if [[ "$(git -C "$FORK" rev-parse refs/heads/main 2>/dev/null)" == "$(git -C "$WORK/pynode/groups/native/src" rev-parse refs/heads/main)" \
+      && "$(git -C "$FORK" config repository.rngit.upstream.source)" == "rns://$PYDEST/native/src" ]]; then
+    pass "forked over Reticulum from a stock rngit node"
+else
+    sed 's/^/  | /' "$WORK/9.log" | tail -5
+    grep -aE "Failed to fetch|rngit" "$WORK/server.log" | tail -3 | sed 's/^/  s| /'
+    fail "rns fork"
+fi
+
+# ---------------------------------------------------------------------------
+say "10: upstream advances, alice syncs the fork"
+echo "more" >> "$WORK/upstream/src/UP.md"
+git -C "$WORK/upstream/src" commit -q -am "second upstream commit"
+git -C "$WORK/upstream/src" push -q "$WORK/pynode/groups/native/src" main
+NEW_UP="$(git -C "$WORK/upstream/src" rev-parse main)"
+as alice rngit sync --config "$WORK/alice" --rnsconfig "$RNS_CONFIG" "rns://$DEST/public/rnsfork" > "$WORK/10.log" 2>&1
+if [[ "$(git -C "$FORK" rev-parse refs/heads/main 2>/dev/null)" == "$NEW_UP" ]] && grep -q "synced" "$WORK/10.log"; then
+    pass "fork now at ${NEW_UP:0:12}"
+else
+    sed 's/^/  | /' "$WORK/10.log" | tail -5; fail "fork sync"
+fi
+
+# ---------------------------------------------------------------------------
+say "11: bob tries to sync the fork"
+as bob rngit sync --config "$WORK/bob" --rnsconfig "$RNS_CONFIG" "rns://$DEST/public/rnsfork" > "$WORK/11.log" 2>&1
+if grep -qiE "not allowed|not found" "$WORK/11.log"; then
+    pass "refused ($(grep -oiE 'not allowed|not found' "$WORK/11.log" | head -1))"
+else
+    sed 's/^/  | /' "$WORK/11.log" | tail -5; fail "unauthorised sync"
+fi
+
+# ---------------------------------------------------------------------------
+say "12: alice forks a file:// source"
+as alice rngit fork --config "$WORK/alice" --rnsconfig "$RNS_CONFIG" \
+    "file://$UP" "rns://$DEST/public/filefork" > "$WORK/12.log" 2>&1
+if grep -q "Prohibited source URL" "$WORK/12.log" && [[ ! -e "$WORK/groups/public/filefork" ]]; then
+    pass "refused: Prohibited source URL"
+else
+    sed 's/^/  | /' "$WORK/12.log" | tail -5; fail "file:// source"
+fi
+
+# ---------------------------------------------------------------------------
 say "Result"
 if [[ $FAILURES -eq 0 ]]; then
-    echo "PASS — stock rngit and git-remote-rns against Core's rngit node: 7 of 7."
+    echo "PASS — stock rngit and git-remote-rns against Core's rngit node: 12 of 12."
 else
     echo "FAIL — $FAILURES check(s) failed. Logs in $WORK/"
 fi

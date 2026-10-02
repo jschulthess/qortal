@@ -67,6 +67,8 @@ public final class RngitRepositories {
     private final Map<String, Group> groups = new ConcurrentHashMap<>();
     /** Serves Qortal names as groups when set; local groups take precedence. */
     private volatile RngitQdnGateway qdn;
+    /** Resolves name:, group: and owner rule targets when set (needs Qortal state). */
+    private volatile RngitIdentityBindings bindings;
     private final Map<String, String> aliases;
     private final Map<String, List<String>> accessConfig;
     private final Set<String> blockedIdentities;
@@ -90,6 +92,33 @@ public final class RngitRepositories {
 
     RngitQdnGateway getQdnGateway() {
         return qdn;
+    }
+
+    void setIdentityBindings(RngitIdentityBindings bindings) {
+        this.bindings = bindings;
+    }
+
+    /**
+     * Resolves Qortal rule targets for rules belonging to {@code groupName}:
+     * {@code owner} means the current owner of that group's Qortal name, so it
+     * only applies to QDN groups.
+     */
+    RngitPermissions.QortalTargets qortalTargets(String groupName) {
+        RngitIdentityBindings b = this.bindings;
+        if (b == null) return null;
+        return (target, remote) -> {
+            if (RngitPermissions.TARGET_OWNER.equals(target)) {
+                return isQdnGroup(groupName) && b.boundIdentities(RngitQdn.nameOwner(groupName)).contains(remote);
+            }
+            if (target.startsWith(RngitPermissions.TARGET_NAME_PREFIX)) {
+                String owner = RngitQdn.nameOwner(target.substring(RngitPermissions.TARGET_NAME_PREFIX.length()));
+                return owner != null && b.boundIdentities(owner).contains(remote);
+            }
+            if (target.startsWith(RngitPermissions.TARGET_GROUP_PREFIX)) {
+                return b.isBoundToGroupMember(Integer.parseInt(target.substring(RngitPermissions.TARGET_GROUP_PREFIX.length())), remote);
+            }
+            return false;
+        };
     }
 
     /** {@code r:all}: everyone may read public QDN data. */
@@ -257,13 +286,14 @@ public final class RngitRepositories {
             }
         }
 
+        RngitPermissions.QortalTargets qortal = qortalTargets(groupName);
         Set<String> docPermissions = doc.get(permission);
         if (docPermissions.contains(RngitPermissions.TARGET_NONE)) return false;
         if (docPermissions.contains(RngitPermissions.TARGET_ALL)) return true;
-        if (docPermissions.contains(remoteHashHex)) return true;
-        if (doc.get(Permission.ADMIN).contains(remoteHashHex)) return true;
+        if (RngitPermissions.matches(docPermissions, remoteHashHex, qortal)) return true;
+        if (RngitPermissions.matches(doc.get(Permission.ADMIN), remoteHashHex, qortal)) return true;
 
-        return RngitPermissions.resolve(remoteHashHex, repository.permissions, group.permissions, permission);
+        return RngitPermissions.resolve(remoteHashHex, repository.permissions, group.permissions, permission, qortal);
     }
 
     /**
@@ -292,7 +322,8 @@ public final class RngitRepositories {
         Repository repository = getRepository(groupName, repositoryName);
         if (group == null || repository == null) return false;
 
-        return RngitPermissions.resolve(remoteHashHex, repository.permissions, group.permissions, permission);
+        return RngitPermissions.resolve(remoteHashHex, repository.permissions, group.permissions, permission,
+                qortalTargets(groupName));
     }
 
     /**
@@ -304,6 +335,6 @@ public final class RngitRepositories {
         Group group = getGroup(groupName);
         if (group == null) return false;
 
-        return RngitPermissions.resolveGroup(remoteHashHex, group.permissions, permission);
+        return RngitPermissions.resolveGroup(remoteHashHex, group.permissions, permission, qortalTargets(groupName));
     }
 }

@@ -205,6 +205,7 @@ public class RngitServer {
             if (qdnAvailable()) {
                 RngitQdnGateway gateway = new RngitQdnGateway(configDir.resolve("qdn-cache"));
                 repositories.setQdnGateway(gateway);
+                repositories.setIdentityBindings(new RngitIdentityBindings());
                 log.info("rngit QDN gateway enabled: every registered name is a repository group");
                 try {
                     RngitQdnPublisher publisher = RngitQdnPublisher.load(configDir, gateway);

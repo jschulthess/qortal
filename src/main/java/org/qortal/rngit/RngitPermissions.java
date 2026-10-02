@@ -120,15 +120,55 @@ public final class RngitPermissions {
         return s.length() == IDENTITY_HASH_HEX_LENGTH && s.chars().allMatch(c -> Character.digit(c, 16) >= 0);
     }
 
+    /**
+     * Qortal targets, an extension resolved by this node only:
+     * {@code name:<name>} (identities bound to the name's current owner),
+     * {@code group:<id>} (identities bound to members of a Qortal group) and
+     * {@code owner} (identities bound to the current owner of the Qortal name a
+     * QDN repository lives under). Stock clients only ever see them as text.
+     */
+    public static final String TARGET_OWNER = "owner";
+    static final String TARGET_NAME_PREFIX = "name:";
+    static final String TARGET_GROUP_PREFIX = "group:";
+
+    /** Whether a target needs Qortal state to resolve, rather than matching a hash. */
+    static boolean isQortalTarget(String target) {
+        return TARGET_OWNER.equals(target) || target.startsWith(TARGET_NAME_PREFIX) || target.startsWith(TARGET_GROUP_PREFIX);
+    }
+
+    /** Resolves Qortal targets for a remote identity; null where Qortal state is unavailable. */
+    @FunctionalInterface
+    public interface QortalTargets {
+        boolean matches(String target, String remoteHashHex);
+    }
+
+    private static String qortalTarget(String target) {
+        if (TARGET_OWNER.equals(target)) return target;
+        if (target.startsWith(TARGET_NAME_PREFIX)) {
+            String name = target.substring(TARGET_NAME_PREFIX.length());
+            return name.isEmpty() || name.contains(":") ? null : target;
+        }
+        if (target.startsWith(TARGET_GROUP_PREFIX)) {
+            String id = target.substring(TARGET_GROUP_PREFIX.length());
+            return !id.isEmpty() && id.chars().allMatch(Character::isDigit) && id.length() < 10 ? target : null;
+        }
+        return null;
+    }
+
     /** {@code parse_permission}: a {@code permission:target} string. */
     static Rule parseRule(String rule, Map<String, String> aliases) {
-        String[] comps = rule.split(":", -1);
-        if (comps.length != 2) {
+        int colon = rule.indexOf(':');
+        if (colon < 0) {
+            return new Rule(null, null);
+        }
+        String rest = rule.substring(colon + 1);
+        String qortal = qortalTarget(rest);
+        if (qortal == null && rest.contains(":")) {
             return new Rule(null, null);
         }
 
-        String perm = comps[0].toLowerCase(Locale.ROOT);
-        String target = resolveAlias(comps[1], aliases);
+        String perm = rule.substring(0, colon).toLowerCase(Locale.ROOT);
+        String target = qortal != null ? qortal : resolveAlias(rest, aliases);
 
         Set<Permission> permissions = null;
         if (READWRITE_NAMES.contains(perm)) {
@@ -143,7 +183,9 @@ public final class RngitPermissions {
         }
 
         String resolvedTarget;
-        if (TGT_NONE_NAMES.contains(target)) {
+        if (qortal != null) {
+            resolvedTarget = qortal;
+        } else if (TGT_NONE_NAMES.contains(target)) {
             resolvedTarget = TARGET_NONE;
         } else if (TGT_ALL_NAMES.contains(target)) {
             resolvedTarget = TARGET_ALL;
@@ -215,25 +257,44 @@ public final class RngitPermissions {
      * at the deciding level denies.
      */
     static boolean resolve(String remoteHashHex, PermissionSet repository, PermissionSet group, Permission permission) {
+        return resolve(remoteHashHex, repository, group, permission, null);
+    }
+
+    static boolean resolve(String remoteHashHex, PermissionSet repository, PermissionSet group, Permission permission,
+                           QortalTargets qortal) {
         Set<String> repositoryPermissions = repository.get(permission);
         Set<String> repositoryAdmins = repository.get(Permission.ADMIN);
 
         if (repositoryPermissions.contains(TARGET_NONE)) return false;
         if (repositoryPermissions.contains(TARGET_ALL)) return true;
-        if (repositoryPermissions.contains(remoteHashHex)) return true;
-        if (repositoryAdmins.contains(remoteHashHex)) return true;
+        if (matches(repositoryPermissions, remoteHashHex, qortal)) return true;
+        if (matches(repositoryAdmins, remoteHashHex, qortal)) return true;
         if (!repositoryPermissions.isEmpty()) return false;
 
-        return resolveGroup(remoteHashHex, group, permission);
+        return resolveGroup(remoteHashHex, group, permission, qortal);
     }
 
     /** {@code resolve_group_permission}. */
     static boolean resolveGroup(String remoteHashHex, PermissionSet group, Permission permission) {
+        return resolveGroup(remoteHashHex, group, permission, null);
+    }
+
+    static boolean resolveGroup(String remoteHashHex, PermissionSet group, Permission permission, QortalTargets qortal) {
         Set<String> groupPermissions = group.get(permission);
 
         if (groupPermissions.contains(TARGET_NONE)) return false;
         if (groupPermissions.contains(TARGET_ALL)) return true;
-        if (groupPermissions.contains(remoteHashHex)) return true;
-        return group.get(Permission.ADMIN).contains(remoteHashHex);
+        if (matches(groupPermissions, remoteHashHex, qortal)) return true;
+        return matches(group.get(Permission.ADMIN), remoteHashHex, qortal);
+    }
+
+    /** The identity is listed, or a Qortal target in the list resolves to it. */
+    static boolean matches(Set<String> targets, String remoteHashHex, QortalTargets qortal) {
+        if (targets.contains(remoteHashHex)) return true;
+        if (qortal == null) return false;
+        for (String target : targets) {
+            if (isQortalTarget(target) && qortal.matches(target, remoteHashHex)) return true;
+        }
+        return false;
     }
 }

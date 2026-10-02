@@ -116,4 +116,28 @@ class RngitPermissionsTest {
                 repositories.validateAllowedContent("r:all\n# fine\nw:mallory\nw:" + BOB));
         assertEquals("Invalid permission \"read-all\" on line 1", repositories.validateAllowedContent("read-all"));
     }
+
+    @Test
+    void qortalTargetsParseAndResolveThroughTheNode() {
+        PermissionSet repo = rules(String.join("\n",
+                "w:name:alice", "r:group:42", "adm:owner",
+                "w:name:", "w:group:x", "w:foo:bar", "w:name:a:b"));
+        assertEquals(Set.of("name:alice"), repo.get(Permission.WRITE), "malformed Qortal targets are skipped");
+        assertEquals(Set.of("group:42"), repo.get(Permission.READ));
+        assertEquals(Set.of("owner"), repo.get(Permission.ADMIN));
+
+        // A stand-in for the node's lookups: BOB is bound to alice's account, EVE to group 42
+        RngitPermissions.QortalTargets qortal = (target, remote) ->
+                target.equals("name:alice") && remote.equals(BOB) || target.equals("group:42") && remote.equals(EVE);
+        PermissionSet group = PermissionSet.empty();
+
+        assertTrue(RngitPermissions.resolve(BOB, repo, group, Permission.WRITE, qortal));
+        assertFalse(RngitPermissions.resolve(EVE, repo, group, Permission.WRITE, qortal));
+        assertTrue(RngitPermissions.resolve(EVE, repo, group, Permission.READ, qortal));
+        assertFalse(RngitPermissions.resolve(BOB, repo, group, Permission.WRITE), "without Qortal state they match nothing");
+
+        RngitRepositories repositories = new RngitRepositories(Map.of(), Map.of(), Set.of());
+        assertEquals(null, repositories.validateAllowedContent("w:name:alice\nr:group:42\nadm:owner"));
+        assertEquals("Invalid permission \"w:group:x\" on line 1", repositories.validateAllowedContent("w:group:x"));
+    }
 }

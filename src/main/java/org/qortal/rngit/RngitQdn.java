@@ -138,10 +138,15 @@ public final class RngitQdn {
      * @throws IOException if the resource does not exist or does not arrive in time
      */
     public static Path readResource(String name, String identifier, long timeoutMs) throws IOException {
+        return readResource(SERVICE, name, identifier, timeoutMs);
+    }
+
+    /** {@link #readResource(String, String, long)} for a resource of another service. */
+    public static Path readResource(Service service, String name, String identifier, long timeoutMs) throws IOException {
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (true) {
             try {
-                ArbitraryDataReader reader = new ArbitraryDataReader(name, ArbitraryDataFile.ResourceIdType.NAME, SERVICE, identifier);
+                ArbitraryDataReader reader = new ArbitraryDataReader(name, ArbitraryDataFile.ResourceIdType.NAME, service, identifier);
                 reader.loadSynchronously(false);
                 return reader.getFilePath();
             } catch (MissingDataException e) {

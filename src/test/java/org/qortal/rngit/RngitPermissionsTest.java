@@ -106,4 +106,14 @@ class RngitPermissionsTest {
         assertEquals(null, RngitRefs.sanSha("a".repeat(39)));
         assertEquals(null, RngitRefs.sanSha("g".repeat(40)));
     }
+
+    @Test
+    void uploadedAllowedContentIsValidatedLineByLine() {
+        RngitRepositories repositories = new RngitRepositories(Map.of("alice", ALICE), Map.of(), Set.of());
+
+        assertEquals(null, repositories.validateAllowedContent("# comment\n\nr:all\nw:alice\nadm:" + BOB + "\n"));
+        assertEquals("Invalid permission \"w:mallory\" on line 3",
+                repositories.validateAllowedContent("r:all\n# fine\nw:mallory\nw:" + BOB));
+        assertEquals("Invalid permission \"read-all\" on line 1", repositories.validateAllowedContent("read-all"));
+    }
 }

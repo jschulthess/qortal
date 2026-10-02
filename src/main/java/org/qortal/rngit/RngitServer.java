@@ -9,6 +9,7 @@ import io.reticulum.destination.Response;
 import io.reticulum.identity.Identity;
 import io.reticulum.link.Link;
 import io.reticulum.link.LinkStatus;
+import io.reticulum.utils.MsgPackUtils;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.qortal.rngit.RngitPermissions.Permission;
@@ -50,10 +51,16 @@ import static org.qortal.rngit.RngitProtocol.*;
  * match the reference byte for byte, including its choice of "Not found" over
  * "Not allowed" where revealing a repository's existence would leak it.
  * <p>
- * Deliberate difference: a blocked identity is refused by every handler. The
- * reference checks its blocklist only inside {@code resolve_permission}, so a
- * blocked identity could still create repositories in a group granting
- * {@code c:all}.
+ * Deliberate differences from the reference:
+ * <ul>
+ *   <li>A blocked identity is refused by every handler. The reference checks its
+ *       blocklist only inside {@code resolve_permission}, so a blocked identity
+ *       could still create repositories in a group granting {@code c:all}.</li>
+ *   <li>Saving a repository's permissions requires admin on the repository, as
+ *       its documentation says. The reference's set step checks group admin
+ *       instead, while the step before it checks repository admin, so a
+ *       repository's creator could read its rules but not save them.</li>
+ * </ul>
  */
 @Slf4j
 public class RngitServer {
@@ -206,6 +213,7 @@ public class RngitServer {
         register(PATH_FORK, request -> handleRemoteClone(request, "fork"));
         register(PATH_MIRROR, request -> handleRemoteClone(request, "mirror"));
         register(PATH_SYNC, this::handleSync);
+        register(PATH_PERMS, this::handlePerms);
     }
 
     private void register(String path, Function<Request, Response> handler) {
@@ -759,6 +767,106 @@ public class RngitServer {
         } finally {
             syncLock.unlock();
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Remote permission management
+
+    /** Serialises permission file writes and reloads ({@code perms_lock}). */
+    private final Object permsLock = new Object();
+
+    /** {@code handle_perms}: get or set a group's or repository's {@code .allowed} file. */
+    Response handlePerms(Request request) {
+        if (request.getRemoteIdentity() == null) return result(RES_DISALLOWED, "Not identified");
+        String remote = remoteHash(request);
+        if (repositories.isBlocked(remote)) return result(RES_NOT_FOUND, "Not found");
+        Map<Object, Object> data = requestMap(request);
+        if (data == null) return result(RES_INVALID_REQ, "Invalid request");
+        log.debug("Permissions request from remote {}", remote);
+
+        Object operation = data.get("operation");
+        if ("gperms".equals(operation)) {
+            if (!data.containsKey((long) IDX_GROUP)) return result(RES_INVALID_REQ, "No group specified");
+            String groupName = parseGroupPath(intKey(data, IDX_GROUP));
+            if (!repositories.resolveGroupPermission(remote, groupName, Permission.READ)) return result(RES_NOT_FOUND, "Not found");
+            if (!repositories.resolveGroupPermission(remote, groupName, Permission.ADMIN)) return result(RES_DISALLOWED, "Not allowed");
+
+            Group group = repositories.getGroup(groupName);
+            Path allowed = Path.of(group.getPath() + ".allowed");
+            return permissionsStep(data, allowed, () -> repositories.updateGroupPermissions(group), "group " + groupName, remote);
+        }
+        if ("rperms".equals(operation)) {
+            if (!data.containsKey((long) IDX_REPOSITORY)) return result(RES_INVALID_REQ, "No repository specified");
+            String[] path = parseRepositoryPath(intKey(data, IDX_REPOSITORY));
+            boolean readAccess = repositories.resolvePermission(remote, path[0], path[1], Permission.READ);
+            boolean adminAccess = repositories.resolvePermission(remote, path[0], path[1], Permission.ADMIN);
+            if (!adminAccess) return readAccess ? result(RES_DISALLOWED, "Not allowed") : result(RES_NOT_FOUND, "Not found");
+
+            Repository repository = repositories.getRepository(path[0], path[1]);
+            Path allowed = Path.of(repository.getPath() + ".allowed");
+            return permissionsStep(data, allowed, () -> repositories.updateRepositoryPermissions(repository),
+                    "repository " + path[0] + "/" + path[1], remote);
+        }
+        return result(RES_INVALID_REQ, "Invalid request");
+    }
+
+    /** The get and set steps, shared by group and repository permissions. */
+    private Response permissionsStep(Map<Object, Object> data, Path allowedPath, Runnable reload, String what, String remote) {
+        Object step = data.get("step");
+        if (step == null || "".equals(step)) return result(RES_INVALID_REQ, "Invalid request");
+
+        if ("get".equals(step)) {
+            try {
+                String content = Files.isRegularFile(allowedPath) ? Files.readString(allowedPath, StandardCharsets.UTF_8) : "";
+                byte[] packed = MsgPackUtils.packObject(Map.of("content", content));
+                byte[] out = new byte[1 + packed.length];
+                out[0] = RES_OK;
+                System.arraycopy(packed, 0, out, 1, packed.length);
+                return Response.of(out);
+            } catch (Exception e) {
+                log.error("Error getting permissions for {}", what, e);
+                return result(RES_REMOTE_FAIL, "Error getting permissions");
+            }
+        }
+
+        if ("set".equals(step)) {
+            Object contentValue = data.getOrDefault("content", "");
+            if (!(contentValue instanceof String)) return result(RES_INVALID_REQ, "Invalid request");
+            String content = (String) contentValue;
+            String invalid = repositories.validateAllowedContent(content);
+            if (invalid != null) return result(RES_INVALID_REQ, invalid);
+
+            try {
+                if (Files.isExecutable(allowedPath)) {
+                    return result(RES_DISALLOWED, "Executable permission resolvers can only be modified node-side");
+                }
+                synchronized (permsLock) {
+                    Path tmp = Path.of(allowedPath + ".tmp");
+                    Files.writeString(tmp, content, StandardCharsets.UTF_8);
+                    Files.move(tmp, allowedPath, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                    try {
+                        reload.run();
+                    } catch (Exception e) {
+                        log.error("Error while refreshing permissions for {}", what, e);
+                    }
+                }
+                log.info("Permissions for {} updated by {}", what, remote);
+                return ok();
+            } catch (Exception e) {
+                log.error("Error setting permissions for {}", what, e);
+                return result(RES_REMOTE_FAIL, "Error setting permissions");
+            }
+        }
+
+        return result(RES_INVALID_REQ, "Invalid step");
+    }
+
+    /** {@code parse_request_group_path}: a single path component, or null. */
+    static String parseGroupPath(Object path) {
+        if (!(path instanceof String)) return null;
+        String group = (String) path;
+        if (group.contains("/") || group.length() > NAME_LIMIT) return null;
+        return group;
     }
 
     private static void writeCreatorPermissions(Path repositoryPath, String creatorHashHex) throws IOException {

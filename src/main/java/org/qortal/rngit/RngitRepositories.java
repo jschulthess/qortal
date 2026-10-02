@@ -176,6 +176,25 @@ public final class RngitRepositories {
         return true;
     }
 
+    /**
+     * Checks {@code .allowed} content as the reference's set-permissions step
+     * does: every non-empty, non-comment line must parse as a rule.
+     *
+     * @return null if valid, else the reference's error message
+     */
+    public String validateAllowedContent(String content) {
+        String[] lines = content.split("\\R", -1);
+        for (int i = 0; i < lines.length; i++) {
+            String stripped = lines[i].strip();
+            if (stripped.isEmpty() || stripped.startsWith("#")) continue;
+            RngitPermissions.Rule rule = RngitPermissions.parseRule(stripped, aliases);
+            if (rule.permissions == null || rule.target == null) {
+                return "Invalid permission \"" + stripped + "\" on line " + (i + 1);
+            }
+        }
+        return null;
+    }
+
     /** {@code resolve_permission}: false for a blocked identity or an unknown group or repository. */
     public boolean resolvePermission(String remoteHashHex, String groupName, String repositoryName, Permission permission) {
         if (isBlocked(remoteHashHex)) return false;

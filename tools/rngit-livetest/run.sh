@@ -21,6 +21,10 @@
 #  10  upstream advances; alice: rngit sync          -> fork picks up the new commit
 #  11  bob:   rngit sync                             -> refused
 #  12  alice: rngit fork file:///...                 -> "Prohibited source URL"
+#  13  alice: rngit perms public/repo, adds w:bob    -> saved; bob can now push
+#  14  bob:   rngit perms public/repo                -> refused
+#  15  alice: rngit perms with an invalid rule       -> rejected with its line, file unchanged
+#  16  alice: rngit perms public (group)             -> refused, alice is not group admin
 #
 # Usage:  ./run.sh       (RNS_SRC defaults to ~/git/Reticulum)
 #         RETICULUM_CLASSES=~/git/reticulum-network-stack-own/target/classes ./run.sh
@@ -302,9 +306,55 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# rngit perms opens $EDITOR on the current rules; this one replaces them with
+# $PERMS_CONTENT, so each step states the rules it saves.
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$PERMS_CONTENT" > "$1"' > "$WORK/bin/perms-editor"
+chmod +x "$WORK/bin/perms-editor"
+export EDITOR="$WORK/bin/perms-editor"
+
+say "13: alice grants bob write on public/repo"
+PERMS_CONTENT="$(printf 'adm:%s\nw:%s' "$ALICE" "$BOB")" \
+    as alice rngit perms --config "$WORK/alice" --rnsconfig "$RNS_CONFIG" "$URL" > "$WORK/13a.log" 2>&1
+if [[ -d "$WORK/bob/clone/.git" ]]; then
+    as bob git -C "$WORK/bob/clone" push -q origin master > "$WORK/13b.log" 2>&1
+fi
+if grep -q "Permissions updated" "$WORK/13a.log" && grep -q "^w:$BOB" "$REPO.allowed" \
+      && [[ "$(git -C "$REPO" rev-parse refs/heads/master)" == "$(git -C "$WORK/bob/clone" rev-parse HEAD 2>/dev/null)" ]]; then
+    pass "rules saved by the repository admin; bob's push now accepted"
+else
+    sed 's/^/  | /' "$WORK/13a.log" "$WORK/13b.log" 2>/dev/null | tail -6; fail "repository perms set"
+fi
+
+say "14: bob tries to edit public/repo permissions"
+BEFORE="$(cat "$REPO.allowed")"
+PERMS_CONTENT="adm:$BOB" as bob rngit perms --config "$WORK/bob" --rnsconfig "$RNS_CONFIG" "$URL" > "$WORK/14.log" 2>&1
+if grep -qiE "not allowed|not found" "$WORK/14.log" && [[ "$(cat "$REPO.allowed")" == "$BEFORE" ]]; then
+    pass "refused ($(grep -oiE 'not allowed|not found' "$WORK/14.log" | head -1)), rules unchanged"
+else
+    sed 's/^/  | /' "$WORK/14.log" | tail -5; fail "unauthorised perms edit"
+fi
+
+say "15: alice saves an invalid rule"
+PERMS_CONTENT="$(printf 'adm:%s\nw:mallory' "$ALICE")" \
+    as alice rngit perms --config "$WORK/alice" --rnsconfig "$RNS_CONFIG" "$URL" > "$WORK/15.log" 2>&1
+if grep -q 'Invalid permission "w:mallory" on line 2' "$WORK/15.log" && [[ "$(cat "$REPO.allowed")" == "$BEFORE" ]]; then
+    pass "rejected with its line number, rules unchanged"
+else
+    sed 's/^/  | /' "$WORK/15.log" | tail -5; fail "invalid rule"
+fi
+
+say "16: alice tries to edit the group's permissions"
+PERMS_CONTENT="adm:$ALICE" as alice rngit perms --config "$WORK/alice" --rnsconfig "$RNS_CONFIG" "rns://$DEST/public" > "$WORK/16.log" 2>&1
+if grep -qiE "not allowed" "$WORK/16.log" && [[ ! -e "$WORK/groups/public.allowed" ]]; then
+    pass "refused: not a group admin"
+else
+    sed 's/^/  | /' "$WORK/16.log" | tail -5; fail "group perms"
+fi
+
+# ---------------------------------------------------------------------------
 say "Result"
 if [[ $FAILURES -eq 0 ]]; then
-    echo "PASS — stock rngit and git-remote-rns against Core's rngit node: 12 of 12."
+    echo "PASS — stock rngit and git-remote-rns against Core's rngit node: 16 of 16."
 else
     echo "FAIL — $FAILURES check(s) failed. Logs in $WORK/"
 fi

@@ -35,17 +35,24 @@ import java.util.stream.Stream;
  * last published descriptor, publishes one bundle holding every object the
  * descriptor's refs do not already reach, then the updated descriptor. Each
  * publish costs the account the network's fee per transaction.
+ * <p>
+ * Compaction: once a descriptor lists {@code compact_after} bundles, the next
+ * publish that has new objects sends a full bundle instead of a thin one, and
+ * the descriptor lists only that. The old bundles stay on QDN, unreferenced.
  */
 @Slf4j
 final class RngitQdnPublisher {
 
     static final String KEY_FILE = "publisher_key";
+    static final int DEFAULT_COMPACT_AFTER = 16;
 
     private final PrivateKeyAccount account;
     private final String address;
     private final RngitQdnGateway gateway;
     private final ExecutorService executor;
     private final Set<String> pending = ConcurrentHashMap.newKeySet();
+    /** Bundles a descriptor may list before the next publish replaces them with one full bundle; 0 never. */
+    private volatile int compactAfter = DEFAULT_COMPACT_AFTER;
 
     private RngitQdnPublisher(byte[] privateKey, RngitQdnGateway gateway) throws DataException {
         try (Repository repository = RepositoryManager.getRepository()) {
@@ -73,6 +80,10 @@ final class RngitQdnPublisher {
 
     String getAddress() {
         return address;
+    }
+
+    void setCompactAfter(int compactAfter) {
+        this.compactAfter = Math.max(0, compactAfter);
     }
 
     boolean ownsName(String name) {
@@ -122,8 +133,20 @@ final class RngitQdnPublisher {
                     if (RngitGit.hasObject(path, sha)) haves.add(sha);
                 }
                 if (!refs.isEmpty() && RngitGit.createBundle(path, new ArrayList<>(refs.keySet()), haves, bundle)) {
+                    // Compaction: rather than one more thin bundle, a full one that
+                    // replaces the whole chain. Same number of transactions; new
+                    // nodes then need only this bundle.
+                    boolean compact = compactAfter > 0 && last.bundles.size() >= compactAfter;
+                    if (compact) {
+                        Files.delete(bundle);
+                        RngitGit.createBundle(path, new ArrayList<>(refs.keySet()), List.of(), bundle);
+                    }
                     bundleId = RngitQdn.bundleIdentifier(repositoryName, nextBundleNumber(last));
                     RngitQdn.publish(account, name, bundleId, bundle.getParent(), repositoryName + " bundle");
+                    if (compact) {
+                        log.info("Compacting {}/{}: {} bundles replaced by {}", name, repositoryName, last.bundles.size(), bundleId);
+                        next.bundles.clear();
+                    }
                     next.bundles.add(bundleId);
                 }
 

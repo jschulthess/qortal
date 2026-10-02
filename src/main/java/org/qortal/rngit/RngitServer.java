@@ -210,6 +210,7 @@ public class RngitServer {
                 try {
                     RngitQdnPublisher publisher = RngitQdnPublisher.load(configDir, gateway);
                     if (publisher != null) {
+                        publisher.setCompactAfter(config.getInt("qdn", "compact_after", RngitQdnPublisher.DEFAULT_COMPACT_AFTER));
                         gateway.setPublisher(publisher);
                         log.info("rngit QDN publishing enabled for names owned by {}", publisher.getAddress());
                     }

@@ -52,6 +52,10 @@ public final class RngitConfig {
             "  # held on QDN: rns://<this node>/<name>/<repo>. Groups configured",
             "  # above take precedence over a name spelled the same.",
             "  enabled = yes",
+            "  # With a publisher_key in this directory, the node publishes for the",
+            "  # names that key's account owns. After this many bundles, the next",
+            "  # push publishes one full bundle replacing them (0: never).",
+            "  # compact_after = 16",
             "");
 
     /** The section holding keys that appear before any section header. */

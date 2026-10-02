@@ -148,6 +148,52 @@ class RngitQdnPublisherTests {
         }
     }
 
+    @Test
+    void compactsALongBundleChainIntoOneFullBundle() throws Exception {
+        try (Repository repository = RepositoryManager.getRepository();
+             Git git = Git.init().setDirectory(work.toFile()).setInitialBranch("master").call()) {
+            PrivateKeyAccount bob = Common.getTestAccount(repository, "bob");
+            String name = "gitcompact";
+            registerName(repository, bob, name);
+
+            Path config = Files.createDirectories(tmp.resolve("rngit"));
+            Files.writeString(config.resolve(RngitQdnPublisher.KEY_FILE), Base58.encode(bob.getPrivateKey()));
+            RngitRepositories node = new RngitRepositories(Map.of(), Map.of(), Set.of());
+            RngitQdnGateway gateway = new RngitQdnGateway(tmp.resolve("cache-a"));
+            node.setQdnGateway(gateway);
+            RngitQdnPublisher publisher = RngitQdnPublisher.load(config, gateway);
+            publisher.setCompactAfter(2);
+            gateway.setPublisher(publisher);
+            publisher.create(name, "repo", CREATOR);
+            BlockUtils.mintBlock(repository);
+
+            RngitRepositories follower = otherNode(tmp.resolve("cache-follower"));
+            String previous = null;
+            for (int i = 1; i <= 3; i++) {
+                RevCommit tip = commit(git, "change " + i);
+                Path bundle = tmp.resolve("p" + i + ".bundle");
+                assertTrue(RngitGit.createBundle(work.resolve(".git"), List.of("refs/heads/master"),
+                        previous == null ? List.of() : List.of(previous), bundle));
+                synchronized (gateway.lock(name, "repo")) {
+                    assertTrue(RngitGit.applyBundle(gateway.cachePath(name, "repo"), bundle,
+                            "refs/heads/master", "refs/heads/master", false).ok);
+                }
+                publisher.publish(name, "repo");
+                BlockUtils.mintBlock(repository);
+                // A node that keeps following applies every bundle as it appears
+                assertEquals(tip.name(), RngitGit.resolveRef(follower.getRepository(name, "repo").getPath(), "refs/heads/master"));
+                previous = tip.name();
+            }
+
+            RngitQdn.Descriptor descriptor = otherNode(tmp.resolve("cache-new")).getQdnGateway().descriptor(name, "repo");
+            assertEquals(List.of("repo~b~3"), descriptor.bundles, "two thin bundles, then a full one replacing them");
+            RngitRepositories.Repository fresh = otherNode(tmp.resolve("cache-new2")).getRepository(name, "repo");
+            assertEquals(previous, RngitGit.resolveRef(fresh.getPath(), "refs/heads/master"));
+            assertEquals(List.of("repo~b~3"), Files.readAllLines(fresh.getPath().resolve(RngitQdnGateway.APPLIED_FILE)),
+                    "a new node needs only the full bundle");
+        }
+    }
+
     private static void registerName(Repository repository, PrivateKeyAccount owner, String name) throws DataException {
         RegisterNameTransactionData data = new RegisterNameTransactionData(TestTransaction.generateBase(owner), name, "");
         data.setFee(new RegisterNameTransaction(null, null).getUnitFee(data.getTimestamp()));

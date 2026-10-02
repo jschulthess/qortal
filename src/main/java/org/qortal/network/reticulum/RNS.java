@@ -14,10 +14,12 @@ import lombok.Getter;
 import org.qortal.network.Peer;
 import org.qortal.network.message.*;
 import org.qortal.repository.DataException;
+import org.qortal.rngit.RngitServer;
 import org.qortal.settings.Settings;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Paths;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.nonNull;
@@ -57,6 +59,8 @@ public class RNS {
     @Getter private Destination dataDestination;
     @Getter private volatile boolean isShuttingDown = false;
     private volatile boolean meshStarted = false;   // exported via isMeshStarted()
+    /** Optional rngit repository node; null unless enabled and started. */
+    private RngitServer rngitServer;
 
     // Persisted destination hashes of peers we have talked to, one store per aspect, so a restart
     // reconnects immediately instead of waiting for announces. See KnownPeerStore for why the
@@ -231,6 +235,25 @@ public class RNS {
 
         this.meshStarted = true;
         log.info("RNS mesh started, baseDestination: {}", encodeHexString(baseDestination.getHash()));
+
+        startRngit();
+    }
+
+    /**
+     * The rngit repository node shares this Reticulum instance but has its own
+     * identity and destination. A failure leaves the mesh running without it.
+     */
+    private void startRngit() {
+        if (!Settings.getInstance().isRngitEnabled()) {
+            return;
+        }
+        try {
+            RngitServer server = new RngitServer(Paths.get(Settings.getInstance().getRngitConfigPath()));
+            server.start();
+            this.rngitServer = server;
+        } catch (Exception e) {
+            log.error("Could not start the rngit repository node", e);
+        }
     }
 
     /** One runner per aspect; everything that differs between the two is an argument here. */
@@ -277,6 +300,9 @@ public class RNS {
 
     public void shutdown() {
         this.isShuttingDown = true;
+        if (this.rngitServer != null) {
+            this.rngitServer.shutdown();
+        }
         // Controller calls this unconditionally, so it must tolerate a mesh that never started
         // (no Reticulum stack, or start() refused): the destinations are null in that case, but
         // the executors were still created by the constructor and must be closed either way.

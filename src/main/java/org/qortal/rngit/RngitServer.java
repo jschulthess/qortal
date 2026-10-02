@@ -1,0 +1,582 @@
+package org.qortal.rngit;
+
+import io.reticulum.destination.Destination;
+import io.reticulum.destination.DestinationType;
+import io.reticulum.destination.Direction;
+import io.reticulum.destination.Request;
+import io.reticulum.destination.RequestPolicy;
+import io.reticulum.destination.Response;
+import io.reticulum.identity.Identity;
+import io.reticulum.link.Link;
+import io.reticulum.link.LinkStatus;
+import lombok.Getter;
+import lombok.extern.slf4j.Slf4j;
+import org.qortal.rngit.RngitPermissions.Permission;
+import org.qortal.rngit.RngitRepositories.Group;
+import org.qortal.rngit.RngitRepositories.Repository;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
+
+import static org.apache.commons.codec.binary.Hex.encodeHexString;
+import static org.qortal.rngit.RngitProtocol.*;
+
+/**
+ * An rngit-compatible repository node on the {@code git.repositories}
+ * destination ({@code server.py} {@code ReticulumGitNode}).
+ * <p>
+ * Implements the git operations ({@code /git/list}, {@code /git/fetch},
+ * {@code /git/push}, {@code /git/delete}) and {@code /git/create}. Responses
+ * match the reference byte for byte, including its choice of "Not found" over
+ * "Not allowed" where revealing a repository's existence would leak it.
+ * <p>
+ * Deliberate difference: a blocked identity is refused by every handler. The
+ * reference checks its blocklist only inside {@code resolve_permission}, so a
+ * blocked identity could still create repositories in a group granting
+ * {@code c:all}.
+ */
+@Slf4j
+public class RngitServer {
+
+    static final long JOBS_INTERVAL_SECONDS = 5;
+
+    @Getter
+    private final Path configDir;
+    @Getter
+    private Identity identity;
+    @Getter
+    private Destination destination;
+    @Getter
+    private RngitRepositories repositories;
+    private String nodeName = "Anonymous Git Node";
+    private long announceIntervalMillis = 0;
+    private long lastAnnounce = 0;
+
+    /** Identified links, by link id: the reference's {@code active_links}. */
+    private final Map<String, Link> activeLinks = new ConcurrentHashMap<>();
+    /** Fetch bundles still being transferred on a link; removed when the link goes. */
+    private final Map<String, List<Path>> linkTempFiles = new ConcurrentHashMap<>();
+
+    private ScheduledExecutorService jobs;
+
+    public RngitServer(Path configDir) {
+        this.configDir = configDir;
+    }
+
+    /**
+     * Loads the config, identity and repository groups, and registers the
+     * destination. Reticulum must already be running.
+     */
+    public void start() throws IOException {
+        RngitConfig config = RngitConfig.loadOrCreate(configDir.resolve("config"));
+        this.identity = loadOrCreateIdentity(configDir.resolve("repositories_identity"));
+        applyConfig(config);
+
+        this.destination = new Destination(identity, Direction.IN, DestinationType.SINGLE, APP_NAME, ASPECT);
+        this.destination.acceptsLinks(true);
+        this.destination.setLinkEstablishedCallback(this::remoteConnected);
+        registerRequestHandlers();
+
+        this.jobs = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "rngit-jobs");
+            t.setDaemon(true);
+            return t;
+        });
+        this.jobs.scheduleWithFixedDelay(this::runJobs, JOBS_INTERVAL_SECONDS, JOBS_INTERVAL_SECONDS, TimeUnit.SECONDS);
+
+        log.info("Reticulum Git Node \"{}\" listening on <{}>", nodeName, encodeHexString(destination.getHash()));
+    }
+
+    public void shutdown() {
+        if (jobs != null) {
+            jobs.shutdownNow();
+        }
+        for (String linkId : new ArrayList<>(linkTempFiles.keySet())) {
+            cleanupLink(linkId);
+        }
+    }
+
+    static Identity loadOrCreateIdentity(Path identityPath) throws IOException {
+        if (Files.isReadable(identityPath)) {
+            Identity identity = Identity.fromFile(identityPath);
+            if (identity == null) {
+                throw new IOException("Could not load repositories identity from " + identityPath);
+            }
+            log.info("Repositories identity loaded from {}", identityPath);
+            return identity;
+        }
+
+        Identity identity = new Identity();
+        Files.createDirectories(identityPath.getParent());
+        identity.toFile(identityPath);
+        log.info("Repositories identity generated and persisted to {}", identityPath);
+        return identity;
+    }
+
+    /** {@code __apply_config}. */
+    private void applyConfig(RngitConfig config) {
+        Map<String, String> aliases = new HashMap<>();
+        for (Map.Entry<String, String> entry : config.section("aliases").entrySet()) {
+            String alias = entry.getKey();
+            String hash = config.getString("aliases", alias, "");
+            if (!RngitPermissions.isIdentityHashHex(hash)) {
+                log.warn("Invalid identity hash for alias {} in rngit config, ignoring", alias);
+            } else if (List.of("n", "none", "nobody", "a", "all", "everyone").contains(alias)) {
+                log.warn("Invalid alias {} in rngit config, ignoring", alias);
+            } else if (!aliases.containsKey(alias)) {
+                aliases.put(alias, hash.toLowerCase(Locale.ROOT));
+            }
+        }
+
+        this.nodeName = config.getString("rngit", "node_name", nodeName);
+        this.announceIntervalMillis = config.getInt("rngit", "announce_interval", 0) * 60_000L;
+
+        Set<String> blocked = new HashSet<>();
+        for (String entry : config.getList("rngit", "blocked_identities")) {
+            String hash = RngitPermissions.resolveAlias(entry, aliases);
+            if (RngitPermissions.isIdentityHashHex(hash)) blocked.add(hash.toLowerCase(Locale.ROOT));
+        }
+
+        Map<String, List<String>> access = new HashMap<>();
+        for (String groupName : config.section("access").keySet()) {
+            access.put(groupName, config.getList("access", groupName));
+        }
+
+        this.repositories = new RngitRepositories(aliases, access, blocked);
+
+        for (String groupName : config.section("repositories").keySet()) {
+            String raw = config.getString("repositories", groupName, "");
+            Path groupPath = Path.of(raw.startsWith("~") ? System.getProperty("user.home") + raw.substring(1) : raw);
+            if (!Files.isDirectory(groupPath)) {
+                log.warn("The path \"{}\" specified for repository group \"{}\" does not exist, skipping.", groupPath, groupName);
+            } else {
+                repositories.loadGroup(groupName, groupPath);
+            }
+        }
+    }
+
+    private void registerRequestHandlers() {
+        register(PATH_LIST, this::handleList);
+        register(PATH_FETCH, this::handleFetch);
+        register(PATH_PUSH, this::handlePush);
+        register(PATH_DELETE, this::handleDelete);
+        register(PATH_CREATE, this::handleCreate);
+    }
+
+    private void register(String path, Function<Request, Response> handler) {
+        destination.registerRequestHandler(path, request -> {
+            try {
+                return handler.apply(request);
+            } catch (Exception e) {
+                log.error("Error while handling {} request", path, e);
+                return result(RES_REMOTE_FAIL, "Remote error");
+            }
+        }, RequestPolicy.ALLOW_ALL, null, true);
+    }
+
+    // ------------------------------------------------------------------
+    // Link lifecycle and periodic jobs
+
+    private void remoteConnected(Link link) {
+        log.debug("Peer connected to rngit destination");
+        link.setRemoteIdentifiedCallback(this::remoteIdentified);
+        link.setLinkClosedCallback(closed -> cleanupLink(encodeHexString(closed.getLinkId())));
+    }
+
+    private void remoteIdentified(Link link, Identity identity) {
+        activeLinks.put(encodeHexString(link.getLinkId()), link);
+        log.debug("rngit peer identified as {}", encodeHexString(identity.getHash()));
+    }
+
+    private void cleanupLink(String linkId) {
+        activeLinks.remove(linkId);
+        List<Path> files = linkTempFiles.remove(linkId);
+        if (files == null) return;
+        for (Path file : files) {
+            try {
+                Files.deleteIfExists(file);
+            } catch (IOException e) {
+                log.error("Error while cleaning temporary file {}", file, e);
+            }
+        }
+    }
+
+    private void runJobs() {
+        try {
+            long now = System.currentTimeMillis();
+            if (announceIntervalMillis > 0 && now > lastAnnounce + announceIntervalMillis) {
+                log.debug("Announcing repositories destination");
+                destination.announce(nodeName.getBytes(StandardCharsets.UTF_8));
+                lastAnnounce = now;
+            }
+
+            for (Map.Entry<String, Link> entry : new ArrayList<>(activeLinks.entrySet())) {
+                if (entry.getValue().getStatus() != LinkStatus.ACTIVE) {
+                    cleanupLink(entry.getKey());
+                }
+            }
+        } catch (Exception e) {
+            log.error("Error while running rngit periodic jobs", e);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Request helpers
+
+    static Response result(byte code, String message) {
+        byte[] text = message.getBytes(StandardCharsets.UTF_8);
+        byte[] out = new byte[1 + text.length];
+        out[0] = code;
+        System.arraycopy(text, 0, out, 1, text.length);
+        return Response.of(out);
+    }
+
+    static Response ok() {
+        return Response.of(new byte[]{RES_OK});
+    }
+
+    /** The request data as a map, or null when the requester sent anything else. */
+    @SuppressWarnings("unchecked")
+    static Map<Object, Object> requestMap(Request request) {
+        Object data = request.getDataObject();
+        return data instanceof Map ? (Map<Object, Object>) data : null;
+    }
+
+    /** A value under an integer key: msgpack ints decode as Long. */
+    static Object intKey(Map<Object, Object> data, int key) {
+        return data.get((long) key);
+    }
+
+    /** {@code parse_request_repository_path}: {@code group/repo}, or nulls. */
+    static String[] parseRepositoryPath(Object path) {
+        if (!(path instanceof String)) return new String[]{null, null};
+        String[] components = ((String) path).split("/", -1);
+        if (components.length != 2) return new String[]{null, null};
+        if (components[0].length() > NAME_LIMIT || components[1].length() > NAME_LIMIT) return new String[]{null, null};
+        return components;
+    }
+
+    private String remoteHash(Request request) {
+        return encodeHexString(request.getRemoteIdentity().getHash());
+    }
+
+    /**
+     * The checks every repository handler opens with. Returns a response to send
+     * when the request must be refused, or null to carry on.
+     */
+    private Response precheck(String what, Request request, Map<Object, Object> data) {
+        if (request.getRemoteIdentity() == null) return result(RES_DISALLOWED, "Not identified");
+        String remote = remoteHash(request);
+        if (repositories.isBlocked(remote)) {
+            log.debug("Blocked: {} request from remote {}", what, remote);
+            return result(RES_NOT_FOUND, "Not found");
+        }
+        log.debug("{} request from remote {}", what, remote);
+        if (data == null) return result(RES_INVALID_REQ, "Invalid request");
+        if (!data.containsKey((long) IDX_REPOSITORY)) return result(RES_INVALID_REQ, "No repository specified");
+        return null;
+    }
+
+    // ------------------------------------------------------------------
+    // Git operations
+
+    /** {@code handle_list}. */
+    Response handleList(Request request) {
+        Map<Object, Object> data = requestMap(request);
+        Response refused = precheck("List", request, data);
+        if (refused != null) return refused;
+
+        String[] path = parseRepositoryPath(intKey(data, IDX_REPOSITORY));
+        String remote = remoteHash(request);
+        boolean forPush = Boolean.TRUE.equals(data.get("for_push"));
+        boolean readAccess = repositories.resolvePermission(remote, path[0], path[1], Permission.READ);
+        boolean writeAccess = repositories.resolvePermission(remote, path[0], path[1], Permission.WRITE);
+        boolean access = forPush ? writeAccess : readAccess;
+
+        if (!access) return result(RES_NOT_FOUND, readAccess ? "Not allowed" : "Not found");
+
+        Repository repository = repositories.getRepository(path[0], path[1]);
+        try {
+            log.debug("Listing refs for {}/{}", path[0], path[1]);
+            return result(RES_OK, RngitGit.listRefs(repository.getPath()));
+        } catch (Exception e) {
+            log.error("Error while listing refs for {}/{}", path[0], path[1], e);
+            return result(RES_REMOTE_FAIL, "Could not list refs");
+        }
+    }
+
+    /** {@code handle_fetch}. */
+    @SuppressWarnings("unchecked")
+    Response handleFetch(Request request) {
+        if (!activeLinks.containsKey(encodeHexString(request.getLinkId()))) {
+            return result(RES_DISALLOWED, "Not identified");
+        }
+        Map<Object, Object> data = requestMap(request);
+        Response refused = precheck("Fetch", request, data);
+        if (refused != null) return refused;
+
+        String[] path = parseRepositoryPath(intKey(data, IDX_REPOSITORY));
+        if (!repositories.resolvePermission(remoteHash(request), path[0], path[1], Permission.READ)) {
+            return result(RES_NOT_FOUND, "Not found");
+        }
+        Repository repository = repositories.getRepository(path[0], path[1]);
+
+        Object refsValue = data.get("refs");
+        if (!(refsValue instanceof List) || ((List<Object>) refsValue).isEmpty()) {
+            return result(RES_INVALID_REQ, "No refs specified");
+        }
+
+        List<String> refNames = new ArrayList<>();
+        List<String> haves = new ArrayList<>();
+        for (Object entry : (List<Object>) refsValue) {
+            if (!(entry instanceof Map)) return result(RES_INVALID_REQ, "Invalid request");
+            Map<Object, Object> ref = (Map<Object, Object>) entry;
+            Object name = ref.get("ref");
+            if (!(name instanceof String) || RngitRefs.sanRef((String) name) == null) {
+                return result(RES_INVALID_REQ, "Invalid request");
+            }
+            refNames.add((String) name);
+
+            // Per-ref have: the client already has this ancestor
+            Object have = ref.get("have");
+            if (have instanceof String && !((String) have).isEmpty()) {
+                if (RngitRefs.sanSha((String) have) == null) return result(RES_INVALID_REQ, "Invalid SHA");
+                haves.add((String) have);
+            }
+        }
+
+        // Global have list: objects the client already has, for thin bundles
+        Object globalHaves = data.get("have");
+        if (globalHaves instanceof List) {
+            for (Object sha : (List<Object>) globalHaves) {
+                if (!(sha instanceof String) || RngitRefs.sanSha((String) sha) == null) {
+                    return result(RES_INVALID_REQ, "Invalid SHA");
+                }
+                haves.add((String) sha);
+            }
+        }
+
+        try {
+            log.debug("Fetching refs {} for {}/{}", refNames, path[0], path[1]);
+            Path bundle = Files.createTempFile("rngit-fetch-", ".bundle");
+            if (!RngitGit.createBundle(repository.getPath(), refNames, haves, bundle)) {
+                Files.deleteIfExists(bundle);
+                log.debug("Empty bundle for {}, all objects already on client", refNames);
+                return ok();
+            }
+            linkTempFiles.computeIfAbsent(encodeHexString(request.getLinkId()), k -> new ArrayList<>()).add(bundle);
+            return Response.ofFile(bundle.toFile(), Map.of(IDX_RESULT_CODE, (int) RES_OK));
+        } catch (Exception e) {
+            log.error("Error while fetching refs {} for {}/{}", refNames, path[0], path[1], e);
+            return result(RES_REMOTE_FAIL, "Could not fetch refs");
+        }
+    }
+
+    /** {@code handle_push}: a bundle with one ref update, or a list of direct ref updates. */
+    @SuppressWarnings("unchecked")
+    Response handlePush(Request request) {
+        Map<Object, Object> data = requestMap(request);
+        Response refused = precheck("Push", request, data);
+        if (refused != null) return refused;
+
+        String[] path = parseRepositoryPath(intKey(data, IDX_REPOSITORY));
+        String remote = remoteHash(request);
+        boolean readAccess = repositories.resolvePermission(remote, path[0], path[1], Permission.READ);
+        boolean writeAccess = repositories.resolvePermission(remote, path[0], path[1], Permission.WRITE);
+        if (!writeAccess) {
+            return readAccess ? result(RES_DISALLOWED, "Not allowed") : result(RES_NOT_FOUND, "Not found");
+        }
+        Path repositoryPath = repositories.getRepository(path[0], path[1]).getPath();
+
+        String localRef = data.get("local_ref") instanceof String ? RngitRefs.sanRef((String) data.get("local_ref")) : null;
+        String remoteRef = data.get("remote_ref") instanceof String ? RngitRefs.sanRef((String) data.get("remote_ref")) : null;
+        boolean force = Boolean.TRUE.equals(data.get("force"));
+        Object bundleData = data.get("bundle");
+        Object operations = data.get("operations");
+
+        if (bundleData instanceof String) {
+            bundleData = ((String) bundleData).getBytes(StandardCharsets.UTF_8);
+        }
+
+        if (bundleData instanceof byte[] && ((byte[]) bundleData).length > 0) {
+            if (localRef == null || remoteRef == null) return result(RES_INVALID_REQ, "Missing ref specification");
+            Path bundle = null;
+            try {
+                log.debug("Push {}:{} to {}/{}", localRef, remoteRef, path[0], path[1]);
+                bundle = Files.createTempFile("rngit-push-", ".bundle");
+                Files.write(bundle, (byte[]) bundleData);
+                RngitGit.Result applied = RngitGit.applyBundle(repositoryPath, bundle, localRef, remoteRef, force);
+                if (!applied.ok) {
+                    log.error("Bundle push {}:{} to {}/{} failed: {}", localRef, remoteRef, path[0], path[1], applied.message);
+                    return result(RES_REMOTE_FAIL, "Could not verify bundle");
+                }
+                return ok();
+            } catch (Exception e) {
+                log.error("Error while handling push request for {}/{}", path[0], path[1], e);
+                return result(RES_REMOTE_FAIL, "Remote error");
+            } finally {
+                if (bundle != null) {
+                    try {
+                        Files.deleteIfExists(bundle);
+                    } catch (IOException e) {
+                        log.error("Could not remove push bundle {}", bundle, e);
+                    }
+                }
+            }
+        }
+
+        // An empty list is falsy in the reference and falls through to "Invalid request data"
+        if (operations != null && !(operations instanceof List && ((List<Object>) operations).isEmpty())) {
+            if (!(operations instanceof List)) return result(RES_INVALID_REQ, "Invalid data for operations");
+            try {
+                for (Object entry : (List<Object>) operations) {
+                    if (!(entry instanceof Map)) return result(RES_INVALID_REQ, "Invalid request");
+                    Map<Object, Object> op = (Map<Object, Object>) entry;
+                    Object action = op.getOrDefault("action", "");
+                    String ref = op.get("ref") instanceof String ? RngitRefs.sanRef((String) op.get("ref")) : null;
+                    String sha = op.get("sha") instanceof String ? RngitRefs.sanSha((String) op.get("sha")) : null;
+                    boolean opForce = Boolean.TRUE.equals(op.get("force"));
+
+                    if (!"update_ref".equals(action)) return result(RES_INVALID_REQ, "Unknown operation: " + action);
+                    if (ref == null || !ref.startsWith("refs/")) return result(RES_INVALID_REQ, "Invalid request");
+                    if (sha == null) return result(RES_INVALID_REQ, "Invalid SHA");
+
+                    if (!RngitGit.hasObject(repositoryPath, sha)) {
+                        return result(RES_REMOTE_FAIL, "Object " + sha + " does not exist in repository");
+                    }
+
+                    // An existing ref at a different SHA needs force
+                    String existing = RngitGit.resolveRef(repositoryPath, ref);
+                    if (existing != null && !existing.equals(sha) && !opForce) {
+                        return result(RES_DISALLOWED, "Ref " + ref + " already exists at different SHA (force required)");
+                    }
+
+                    log.debug("Updating ref {} to {} in {}/{}", ref, sha, path[0], path[1]);
+                    RngitGit.Result updated = RngitGit.updateRef(repositoryPath, ref, sha);
+                    if (!updated.ok) {
+                        log.error("Error while updating ref {} to {} for {}/{}: {}", ref, sha, path[0], path[1], updated.message);
+                        return result(RES_REMOTE_FAIL, "Could not update refs");
+                    }
+                }
+                return ok();
+            } catch (Exception e) {
+                log.error("Error while handling push operations for {}/{}", path[0], path[1], e);
+                return result(RES_REMOTE_FAIL, "Remote error");
+            }
+        }
+
+        return result(RES_INVALID_REQ, "Invalid request data");
+    }
+
+    /** {@code handle_delete}. */
+    Response handleDelete(Request request) {
+        Map<Object, Object> data = requestMap(request);
+        Response refused = precheck("Delete", request, data);
+        if (refused != null) return refused;
+
+        String[] path = parseRepositoryPath(intKey(data, IDX_REPOSITORY));
+        String remote = remoteHash(request);
+        boolean readAccess = repositories.resolvePermission(remote, path[0], path[1], Permission.READ);
+        boolean writeAccess = repositories.resolvePermission(remote, path[0], path[1], Permission.WRITE);
+        if (!writeAccess) {
+            return readAccess ? result(RES_DISALLOWED, "Not allowed") : result(RES_NOT_FOUND, "Not found");
+        }
+
+        String ref = data.get("ref") instanceof String ? RngitRefs.sanRef((String) data.get("ref")) : null;
+        if (ref == null || !ref.startsWith("refs/")) return result(RES_INVALID_REQ, "Invalid request");
+
+        log.debug("Deleting ref {} in {}/{}", ref, path[0], path[1]);
+        RngitGit.Result deleted = RngitGit.deleteRef(repositories.getRepository(path[0], path[1]).getPath(), ref);
+        if (!deleted.ok) {
+            log.error("Error while deleting ref {} for {}/{}: {}", ref, path[0], path[1], deleted.message);
+            return result(RES_REMOTE_FAIL, "Could not delete ref");
+        }
+        return ok();
+    }
+
+    // ------------------------------------------------------------------
+    // Repository management
+
+    /** {@code handle_create}: a new bare repository, its creator made admin. */
+    Response handleCreate(Request request) {
+        Map<Object, Object> data = requestMap(request);
+        Response refused = precheck("Create", request, data);
+        if (refused != null) return refused;
+
+        String[] path = parseRepositoryPath(intKey(data, IDX_REPOSITORY));
+        if (path[0] == null || path[1] == null) return result(RES_INVALID_REQ, "Invalid request");
+        Group group = repositories.getGroup(path[0]);
+        if (group == null) return result(RES_NOT_FOUND, "Not found");
+
+        String remote = remoteHash(request);
+        boolean readAccess = repositories.resolveGroupPermission(remote, path[0], Permission.READ);
+        boolean createAccess = repositories.resolveGroupPermission(remote, path[0], Permission.CREATE);
+        if (!Files.exists(group.getPath())) return result(RES_NOT_FOUND, "Not found");
+        if (!createAccess) {
+            return readAccess ? result(RES_DISALLOWED, "Not allowed") : result(RES_NOT_FOUND, "Not found");
+        }
+
+        Path repositoryPath = group.getPath().resolve(path[1]).normalize();
+        if (!repositoryPath.getParent().equals(group.getPath().normalize())) {
+            return result(RES_INVALID_REQ, "Invalid request");
+        }
+
+        if (repositories.getRepository(path[0], path[1]) != null || Files.exists(repositoryPath)) {
+            boolean existingRead = repositories.resolvePermission(remote, path[0], path[1], Permission.READ);
+            return existingRead ? result(RES_DISALLOWED, "Repository already exists") : result(RES_NOT_FOUND, "Not found");
+        }
+
+        try {
+            log.info("Creating repository {}/{} for {}", path[0], path[1], remote);
+            Files.createDirectories(repositoryPath);
+            RngitGit.initBare(repositoryPath);
+
+            Path allowed = Path.of(repositoryPath + ".allowed");
+            Path tmpAllowed = Path.of(allowed + ".tmp");
+            Files.writeString(tmpAllowed, REPO_CREATE_PERMS_TEMPLATE.replace("{IDENTITY_HASH}", remote), StandardCharsets.UTF_8);
+            Files.move(tmpAllowed, allowed, StandardCopyOption.ATOMIC_MOVE);
+
+            if (!repositories.loadRepository(group, repositoryPath)) {
+                log.error("Repository {} created, but runtime loading failed", repositoryPath);
+                deleteRecursively(repositoryPath);
+                return result(RES_REMOTE_FAIL, "Failed to register repository");
+            }
+            return ok();
+        } catch (Exception e) {
+            log.error("Error while creating repository {}/{} for {}", path[0], path[1], remote, e);
+            deleteRecursively(repositoryPath);
+            return result(RES_REMOTE_FAIL, "Could not initialize repository");
+        }
+    }
+
+    private static void deleteRecursively(Path path) {
+        if (!Files.exists(path)) return;
+        try (var walk = Files.walk(path)) {
+            walk.sorted(Comparator.reverseOrder()).forEach(p -> {
+                try {
+                    Files.delete(p);
+                } catch (IOException e) {
+                    log.error("Could not clean up {}", p, e);
+                }
+            });
+        } catch (IOException e) {
+            log.error("Could not clean up failed repository creation at {}", path, e);
+        }
+    }
+}

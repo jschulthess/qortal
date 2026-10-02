@@ -746,6 +746,17 @@ public class Settings {
 	 */
 	private String reticulumAnnouncedHost = "";
 
+	/**
+	 * Serve git repositories over Reticulum, compatible with the reference rngit
+	 * node and git-remote-rns. Requires the Reticulum mesh. Off by default.
+	 */
+	private boolean rngitEnabled = false;
+	/**
+	 * Directory holding the rngit node's config file (reference rngit format),
+	 * its repositories identity and, by convention, its repository groups.
+	 */
+	private String rngitConfigPath = "rngit";
+
 	// Constructors
 
 	private Settings() {
@@ -1651,6 +1662,10 @@ public class Settings {
 	public boolean getReticulumAnnounceGateway() { return this.reticulumAnnounceGateway; }
 
 	public String getReticulumAnnouncedHost() { return this.reticulumAnnouncedHost; }
+
+	public boolean isRngitEnabled() { return this.rngitEnabled; }
+
+	public String getRngitConfigPath() { return this.rngitConfigPath; }
 
 	public int getBuildArbitraryResourcesBatchSize() {
 		return buildArbitraryResourcesBatchSize;

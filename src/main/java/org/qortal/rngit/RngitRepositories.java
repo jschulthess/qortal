@@ -177,6 +177,39 @@ public final class RngitRepositories {
     }
 
     /**
+     * {@code resolve_doc_permission}: a work document's own rules
+     * ({@code <repo>.work/<id>.allowed}, never executed) are checked first and
+     * only add to the repository's, except that {@code none} there denies; the
+     * repository and group rules then apply as in {@link #resolvePermission}.
+     * Stats and release are not document permissions.
+     */
+    public boolean resolveDocumentPermission(String remoteHashHex, String groupName, String repositoryName, long docId,
+                                             Permission permission) {
+        Group group = getGroup(groupName);
+        Repository repository = getRepository(groupName, repositoryName);
+        if (group == null || repository == null) return false;
+        if (permission == Permission.STATS || permission == Permission.RELEASE) return false;
+
+        PermissionSet doc = PermissionSet.empty();
+        Path allowedPath = Path.of(repository.path + ".work").resolve(docId + ".allowed");
+        if (Files.isRegularFile(allowedPath)) {
+            try {
+                doc = RngitPermissions.fromAllowedInput(Files.readString(allowedPath, java.nio.charset.StandardCharsets.UTF_8), aliases, false);
+            } catch (IOException e) {
+                log.error("Error while resolving document permission for {}/{}/{}", groupName, repositoryName, docId, e);
+            }
+        }
+
+        Set<String> docPermissions = doc.get(permission);
+        if (docPermissions.contains(RngitPermissions.TARGET_NONE)) return false;
+        if (docPermissions.contains(RngitPermissions.TARGET_ALL)) return true;
+        if (docPermissions.contains(remoteHashHex)) return true;
+        if (doc.get(Permission.ADMIN).contains(remoteHashHex)) return true;
+
+        return RngitPermissions.resolve(remoteHashHex, repository.permissions, group.permissions, permission);
+    }
+
+    /**
      * Checks {@code .allowed} content as the reference's set-permissions step
      * does: every non-empty, non-comment line must parse as a rule.
      *

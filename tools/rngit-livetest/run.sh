@@ -31,6 +31,13 @@
 #  20  bob:   rngit release create                   -> refused, bob has no release permission
 #  21  node-side tampering, bob fetches again        -> client rejects the altered artifact
 #  22  alice: rngit release delete v1.0              -> release removed
+#  23  alice: rngit work create (after i:all, p:all) -> document #1, signed
+#  24  bob:   rngit work list / view -d 1            -> listed; signature valid, author alice
+#  25  bob:   rngit work update -d 1                 -> comment stored, view shows it
+#  26  bob:   rngit work propose                     -> proposal #2, bob owns its rules
+#  27  bob:   rngit work edit -d 1                   -> refused, not the author
+#  28  alice: rngit work complete -d 1               -> moved to completed
+#  29  alice: rngit work delete -d 1                 -> removed (the reference fails here)
 #
 # Usage:  ./run.sh       (RNS_SRC defaults to ~/git/Reticulum)
 #         RETICULUM_CLASSES=~/git/reticulum-network-stack-own/target/classes ./run.sh
@@ -427,9 +434,78 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+WORKDIR="$REPO.work"
+work() {  # work <who> <rngit work arguments...>
+    local who="$1"; shift
+    as "$who" rngit work --config "$WORK/$who" --rnsconfig "$RNS_CONFIG" "$URL" "$@"
+}
+
+say "23: alice opens up discussion and creates a work document"
+PERMS_CONTENT="$(printf 'adm:%s\nw:%s\ni:all\np:all' "$ALICE" "$BOB")" \
+    as alice rngit perms --config "$WORK/alice" --rnsconfig "$RNS_CONFIG" "$URL" > "$WORK/23a.log" 2>&1
+PERMS_CONTENT="The parser drops trailing fields." work alice create -t "Fix the parser" > "$WORK/23b.log" 2>&1
+if [[ -f "$WORKDIR/active/1/root" ]] && grep -q "#1" "$WORK/23b.log"; then
+    pass "document #1 created"
+else
+    sed 's/^/  | /' "$WORK/23a.log" "$WORK/23b.log" | tail -6; fail "work create"
+fi
+
+say "24: bob lists and views it"
+work bob list > "$WORK/24a.log" 2>&1
+work bob view -d 1 > "$WORK/24b.log" 2>&1
+if grep -q "Fix the parser" "$WORK/24a.log" && grep -qE "Signature : Valid" "$WORK/24b.log" \
+      && grep -q "Author    : <$ALICE>" "$WORK/24b.log" && grep -q "drops trailing fields" "$WORK/24b.log"; then
+    pass "listed; signature valid, author alice"
+else
+    sed 's/^/  | /' "$WORK/24a.log" "$WORK/24b.log" | tail -12; fail "work list/view"
+fi
+
+say "25: bob comments"
+PERMS_CONTENT="Reproduced with a 3-field row." work bob update -d 1 > "$WORK/25a.log" 2>&1
+work bob view -d 1 > "$WORK/25b.log" 2>&1
+if grep -q "Updates   : 1" "$WORK/25b.log" && grep -q "Reproduced with a 3-field row." "$WORK/25b.log"; then
+    pass "comment stored and shown"
+else
+    sed 's/^/  | /' "$WORK/25a.log" "$WORK/25b.log" | tail -8; fail "work comment"
+fi
+
+say "26: bob proposes a document"
+PERMS_CONTENT="Add a strict mode." work bob propose -t "Strict mode" > "$WORK/26.log" 2>&1
+if [[ -f "$WORKDIR/proposed/2/root" ]] && grep -q "^w:$BOB" "$WORKDIR/2.allowed"; then
+    pass "proposal #2, bob owns its rules"
+else
+    sed 's/^/  | /' "$WORK/26.log" | tail -5; fail "work propose"
+fi
+
+say "27: bob tries to edit alice's document"
+PERMS_CONTENT="Hijacked." work bob edit -d 1 > "$WORK/27.log" 2>&1
+if grep -q "not author" "$WORK/27.log" && grep -aq "drops trailing fields" "$WORKDIR/active/1/root"; then
+    pass "refused: not author"
+else
+    sed 's/^/  | /' "$WORK/27.log" | tail -5; fail "foreign edit"
+fi
+
+say "28: alice completes it"
+work alice complete -d 1 > "$WORK/28a.log" 2>&1
+work alice list --scope completed > "$WORK/28b.log" 2>&1
+if [[ -d "$WORKDIR/completed/1" && ! -e "$WORKDIR/active/1" ]] && grep -q "Fix the parser" "$WORK/28b.log"; then
+    pass "moved to completed"
+else
+    sed 's/^/  | /' "$WORK/28a.log" "$WORK/28b.log" | tail -6; fail "work complete"
+fi
+
+say "29: alice deletes it"
+echo y | work alice delete -d 1 > "$WORK/29.log" 2>&1
+if [[ ! -e "$WORKDIR/completed/1" ]] && grep -q "deleted" "$WORK/29.log"; then
+    pass "removed"
+else
+    sed 's/^/  | /' "$WORK/29.log" | tail -5; fail "work delete"
+fi
+
+# ---------------------------------------------------------------------------
 say "Result"
 if [[ $FAILURES -eq 0 ]]; then
-    echo "PASS — stock rngit and git-remote-rns against Core's rngit node: 22 of 22."
+    echo "PASS — stock rngit and git-remote-rns against Core's rngit node: 29 of 29."
 else
     echo "FAIL — $FAILURES check(s) failed. Logs in $WORK/"
 fi

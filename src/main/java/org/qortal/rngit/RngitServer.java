@@ -48,7 +48,8 @@ import static org.qortal.rngit.RngitProtocol.*;
  * {@code /git/push}, {@code /git/delete}), {@code /git/create}, and forks,
  * mirrors and upstream sync ({@code /git/fork}, {@code /git/mirror},
  * {@code /git/sync}) with periodic mirror syncing, remote permission
- * management ({@code /mgmt/perms}) and releases ({@code /mgmt/release}). Responses
+ * management ({@code /mgmt/perms}), releases ({@code /mgmt/release}) and work
+ * documents ({@code /mgmt/work}). Responses
  * match the reference byte for byte, including its choice of "Not found" over
  * "Not allowed" where revealing a repository's existence would leak it.
  * <p>
@@ -216,6 +217,7 @@ public class RngitServer {
         register(PATH_SYNC, this::handleSync);
         register(PATH_PERMS, this::handlePerms);
         register(PATH_RELEASE, this::handleRelease);
+        register(PATH_WORK, this::handleWork);
     }
 
     private void register(String path, Function<Request, Response> handler) {
@@ -804,6 +806,82 @@ public class RngitServer {
             case "create": return releases.create(data, remote);
             case "delete": return releases.delete(data);
             case "latest": return releases.latest(data);
+            default: return result(RES_INVALID_REQ, "Invalid request");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Work documents
+
+    /**
+     * {@code handle_work}: repository permissions, refined per document where
+     * the operation names one, decide access:
+     * <ul>
+     *   <li>list, view: read (a document's own rules or repository admin)</li>
+     *   <li>comment: interact plus read or write</li>
+     *   <li>propose: propose</li>
+     *   <li>create, edit, delete, complete, activate: interact and write</li>
+     *   <li>perms: admin</li>
+     * </ul>
+     */
+    Response handleWork(Request request) {
+        Map<Object, Object> data = requestMap(request);
+        Response refused = precheck("Work", request, data);
+        if (refused != null) return refused;
+
+        Object operation = data.get("operation");
+        if (!RngitWork.truthy(operation)) return result(RES_INVALID_REQ, "Invalid request");
+
+        String[] path = parseRepositoryPath(intKey(data, IDX_REPOSITORY));
+        String remote = remoteHash(request);
+        boolean read = repositories.resolvePermission(remote, path[0], path[1], Permission.READ);
+        boolean write = repositories.resolvePermission(remote, path[0], path[1], Permission.WRITE);
+        boolean interact = repositories.resolvePermission(remote, path[0], path[1], Permission.INTERACT);
+        boolean propose = repositories.resolvePermission(remote, path[0], path[1], Permission.PROPOSE);
+        boolean admin = repositories.resolvePermission(remote, path[0], path[1], Permission.ADMIN);
+        if (!read) return result(RES_NOT_FOUND, "Not found");
+
+        // A named document's own rules refine read, interact and write
+        Object docIdValue = data.get("doc_id");
+        if (RngitWork.truthy(docIdValue) && List.of("read", "view", "comment", "edit", "delete", "perms").contains(operation)) {
+            Long docId = RngitWork.parseDocId(docIdValue);
+            if (docId == null) return result(RES_INVALID_REQ, "Invalid request");
+            read = repositories.resolveDocumentPermission(remote, path[0], path[1], docId, Permission.READ) || admin;
+            if (!read) return result(RES_NOT_FOUND, "Document not found");
+            if (List.of("comment", "edit").contains(operation)) {
+                interact |= repositories.resolveDocumentPermission(remote, path[0], path[1], docId, Permission.INTERACT);
+            }
+            if ("edit".equals(operation)) {
+                write |= repositories.resolveDocumentPermission(remote, path[0], path[1], docId, Permission.WRITE);
+            }
+        }
+
+        boolean comment = interact && (read || write);
+        boolean manage = interact && write;
+        boolean access;
+        switch (String.valueOf(operation)) {
+            case "list": case "view": access = read; break;
+            case "comment": access = comment; break;
+            case "propose": access = propose; break;
+            case "create": case "edit": case "delete": case "complete": case "activate": access = manage; break;
+            case "perms": access = admin; break;
+            default: access = false;
+        }
+        if (!access) return result(RES_DISALLOWED, "Not allowed");
+
+        RngitWork work = new RngitWork(repositories.getRepository(path[0], path[1]).getPath(), repositories, path[0], path[1]);
+        Identity identity = request.getRemoteIdentity();
+        switch ((String) operation) {
+            case "list": return work.list(data, remote);
+            case "view": return work.view(data);
+            case "comment": return work.comment(data, identity);
+            case "create": return work.create(data, identity, false);
+            case "propose": return work.create(data, identity, true);
+            case "edit": return work.edit(data, identity);
+            case "delete": return work.delete(data, identity);
+            case "complete": return work.move(data, identity, true);
+            case "activate": return work.move(data, identity, false);
+            case "perms": return work.perms(data, identity);
             default: return result(RES_INVALID_REQ, "Invalid request");
         }
     }

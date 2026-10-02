@@ -56,4 +56,26 @@ class RngitConfigTest {
         assertFalse(config.getBool("rngit", "missing", false));
         assertEquals(7, config.getInt("rngit", "node_name", 7), "a non-integer falls back");
     }
+
+    /** A release META written by the reference's ConfigObj, quoting where it must. */
+    @Test
+    void readsAndWritesFlatReleaseMeta() {
+        RngitConfig meta = RngitConfig.parse(String.join("\n",
+                "tag = \"v1.0,rc#1\"", "hash = abc", "created = 1700000000", "status = draft", "created_by = it's", ""));
+
+        assertEquals("v1.0,rc#1", meta.getString(RngitConfig.ROOT, "tag", null));
+        assertEquals(1700000000, meta.getInt(RngitConfig.ROOT, "created", 0));
+        assertEquals("it's", meta.getString(RngitConfig.ROOT, "created_by", null));
+
+        java.util.Map<String, String> values = new java.util.LinkedHashMap<>();
+        values.put("tag", "v1.0,rc#1");
+        values.put("status", "published");
+        values.put("note", "say \"hi\"");
+        String written = RngitConfig.writeFlat(values);
+        assertEquals("tag = \"v1.0,rc#1\"\nstatus = published\nnote = 'say \"hi\"'\n", written);
+
+        RngitConfig reread = RngitConfig.parse(written);
+        assertEquals("v1.0,rc#1", reread.getString(RngitConfig.ROOT, "tag", null));
+        assertEquals("say \"hi\"", reread.getString(RngitConfig.ROOT, "note", null));
+    }
 }

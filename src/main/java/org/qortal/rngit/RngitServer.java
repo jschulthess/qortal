@@ -47,7 +47,8 @@ import static org.qortal.rngit.RngitProtocol.*;
  * Implements the git operations ({@code /git/list}, {@code /git/fetch},
  * {@code /git/push}, {@code /git/delete}), {@code /git/create}, and forks,
  * mirrors and upstream sync ({@code /git/fork}, {@code /git/mirror},
- * {@code /git/sync}) with periodic mirror syncing. Responses
+ * {@code /git/sync}) with periodic mirror syncing, remote permission
+ * management ({@code /mgmt/perms}) and releases ({@code /mgmt/release}). Responses
  * match the reference byte for byte, including its choice of "Not found" over
  * "Not allowed" where revealing a repository's existence would leak it.
  * <p>
@@ -214,6 +215,7 @@ public class RngitServer {
         register(PATH_MIRROR, request -> handleRemoteClone(request, "mirror"));
         register(PATH_SYNC, this::handleSync);
         register(PATH_PERMS, this::handlePerms);
+        register(PATH_RELEASE, this::handleRelease);
     }
 
     private void register(String path, Function<Request, Response> handler) {
@@ -766,6 +768,43 @@ public class RngitServer {
             log.error("Could not sync mirrors", e);
         } finally {
             syncLock.unlock();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Releases
+
+    /**
+     * {@code handle_release}: reading needs {@code read}; creating, deleting and
+     * choosing the latest release need {@code release} as well.
+     */
+    Response handleRelease(Request request) {
+        Map<Object, Object> data = requestMap(request);
+        Response refused = precheck("Release", request, data);
+        if (refused != null) return refused;
+
+        Object operation = data.get("operation");
+        if (operation == null || "".equals(operation)) return result(RES_INVALID_REQ, "Invalid request");
+
+        String[] path = parseRepositoryPath(intKey(data, IDX_REPOSITORY));
+        String remote = remoteHash(request);
+        boolean readAccess = repositories.resolvePermission(remote, path[0], path[1], Permission.READ);
+        boolean releaseAccess = repositories.resolvePermission(remote, path[0], path[1], Permission.RELEASE);
+        if (!readAccess) return result(RES_NOT_FOUND, "Not found");
+
+        boolean writing = List.of("create", "delete", "latest").contains(operation);
+        boolean reading = List.of("list", "view", "fetch").contains(operation);
+        if (!(reading || writing && releaseAccess)) return result(RES_DISALLOWED, "Not allowed");
+
+        RngitReleases releases = new RngitReleases(repositories.getRepository(path[0], path[1]).getPath());
+        switch ((String) operation) {
+            case "list": return releases.list();
+            case "view": return releases.view(data);
+            case "fetch": return releases.fetch(data);
+            case "create": return releases.create(data, remote);
+            case "delete": return releases.delete(data);
+            case "latest": return releases.latest(data);
+            default: return result(RES_INVALID_REQ, "Invalid request");
         }
     }
 

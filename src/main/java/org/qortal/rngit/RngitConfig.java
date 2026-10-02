@@ -48,6 +48,9 @@ public final class RngitConfig {
             "  # public = r:all, w:9710b86ba12c42d1d8f30f74fe509286",
             "");
 
+    /** The section holding keys that appear before any section header. */
+    public static final String ROOT = "";
+
     private final Map<String, Map<String, String>> sections;
 
     private RngitConfig(Map<String, Map<String, String>> sections) {
@@ -67,7 +70,9 @@ public final class RngitConfig {
 
     public static RngitConfig parse(String text) {
         Map<String, Map<String, String>> sections = new LinkedHashMap<>();
-        Map<String, String> current = null;
+        // Keys before the first section header live in the root section, as in
+        // the flat files rngit writes with ConfigObj (a release's META)
+        Map<String, String> current = sections.computeIfAbsent(ROOT, k -> new LinkedHashMap<>());
 
         for (String rawLine : text.split("\\R")) {
             String line = rawLine.strip();
@@ -82,8 +87,8 @@ public final class RngitConfig {
             }
 
             int eq = line.indexOf('=');
-            if (eq <= 0 || current == null) {
-                log.debug("Ignoring rngit config line outside a section or without a value: {}", line);
+            if (eq <= 0) {
+                log.debug("Ignoring rngit config line without a value: {}", line);
                 continue;
             }
 
@@ -160,6 +165,25 @@ public final class RngitConfig {
     public List<String> getList(String section, String key) {
         String value = sections.getOrDefault(section, Map.of()).get(key);
         return value == null ? List.of() : splitList(value);
+    }
+
+    /**
+     * Writes flat {@code key = value} lines as ConfigObj does for a file without
+     * sections: values that would not read back verbatim are quoted.
+     */
+    public static String writeFlat(Map<String, String> values) {
+        StringBuilder out = new StringBuilder();
+        for (Map.Entry<String, String> entry : values.entrySet()) {
+            out.append(entry.getKey()).append(" = ").append(quote(entry.getValue())).append('\n');
+        }
+        return out.toString();
+    }
+
+    static String quote(String value) {
+        boolean plain = !value.isEmpty() && value.equals(value.strip())
+                && value.chars().noneMatch(c -> c == ',' || c == '#' || c == '"' || c == '\'' || c == '\n');
+        if (plain) return value;
+        return value.indexOf('"') >= 0 ? "'" + value + "'" : "\"" + value + "\"";
     }
 
     static List<String> splitList(String value) {

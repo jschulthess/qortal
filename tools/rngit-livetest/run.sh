@@ -25,6 +25,12 @@
 #  14  bob:   rngit perms public/repo                -> refused
 #  15  alice: rngit perms with an invalid rule       -> rejected with its line, file unchanged
 #  16  alice: rngit perms public (group)             -> refused, alice is not group admin
+#  17  alice: push tag v1.0, rngit release create    -> published, signed artifacts + manifest stored
+#  18  bob:   rngit release list                     -> v1.0 listed as latest
+#  19  bob:   rngit release fetch latest:all         -> files fetched and verified against alice
+#  20  bob:   rngit release create                   -> refused, bob has no release permission
+#  21  node-side tampering, bob fetches again        -> client rejects the altered artifact
+#  22  alice: rngit release delete v1.0              -> release removed
 #
 # Usage:  ./run.sh       (RNS_SRC defaults to ~/git/Reticulum)
 #         RETICULUM_CLASSES=~/git/reticulum-network-stack-own/target/classes ./run.sh
@@ -352,9 +358,78 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+REL="$REPO.releases"
+say "17: alice tags v1.0 and creates a release"
+A="$WORK/alice/clone"
+git -C "$A" tag v1.0
+as alice git -C "$A" push -q origin v1.0 > "$WORK/17a.log" 2>&1
+mkdir -p "$WORK/dist"
+head -c 200000 /dev/urandom > "$WORK/dist/app-1.0.tar.gz"
+echo "release checksum file" > "$WORK/dist/checksums.txt"
+(cd "$A" && PERMS_CONTENT="Release 1.0 notes" \
+    as alice rngit release --config "$WORK/alice" --rnsconfig "$RNS_CONFIG" "$URL" create "v1.0:$WORK/dist") > "$WORK/17b.log" 2>&1
+STORED="$(ls "$REL/v1.0/artifacts" 2>/dev/null | sort | tr '\n' ' ')"
+if [[ "$STORED" == "app-1.0.tar.gz app-1.0.tar.gz.rsg checksums.txt checksums.txt.rsg manifest.rsm " ]] \
+      && grep -q "^status = published" "$REL/v1.0/META" && [[ "$(cat "$REL/latest")" == "v1.0" ]]; then
+    pass "published with $STORED"
+else
+    sed 's/^/  | /' "$WORK/17a.log" "$WORK/17b.log" | tail -8; echo "  stored: $STORED"; fail "release create"
+fi
+
+say "18: bob lists releases"
+as bob rngit release --config "$WORK/bob" --rnsconfig "$RNS_CONFIG" "$URL" list > "$WORK/18.log" 2>&1
+as bob rngit release --config "$WORK/bob" --rnsconfig "$RNS_CONFIG" "$URL" view v1.0 > "$WORK/18v.log" 2>&1
+if grep -qE "v1\.0.*published" "$WORK/18.log" && grep -q "Release 1.0 notes" "$WORK/18v.log" \
+      && grep -q "Artifacts (5)" "$WORK/18v.log"; then
+    pass "listed ($(grep -E 'v1\.0' "$WORK/18.log" | head -1 | tr -s ' ')); view shows notes and 5 artifacts"
+else
+    sed 's/^/  | /' "$WORK/18.log" | tail -6; fail "release list"
+fi
+
+say "19: bob fetches and verifies the latest release"
+mkdir -p "$WORK/bob/fetch"
+(cd "$WORK/bob/fetch" && as bob rngit release --config "$WORK/bob" --rnsconfig "$RNS_CONFIG" "$URL" fetch latest:all --signer "$ALICE") \
+    > "$WORK/19.log" 2>&1
+if cmp -s "$WORK/dist/app-1.0.tar.gz" "$WORK/bob/fetch/app-1.0.tar.gz" && cmp -s "$WORK/dist/checksums.txt" "$WORK/bob/fetch/checksums.txt" \
+      && grep -q "validated" "$WORK/19.log"; then
+    pass "artifacts verified against alice's signatures"
+else
+    sed 's/^/  | /' "$WORK/19.log" | tail -6; fail "release fetch"
+fi
+
+say "20: bob tries to create a release"
+mkdir -p "$WORK/bobdist" && echo x > "$WORK/bobdist/x.bin"
+(cd "$WORK/bob/clone" && git tag -f v1.0 >/dev/null 2>&1; PERMS_CONTENT="bob's notes" \
+    as bob rngit release --config "$WORK/bob" --rnsconfig "$RNS_CONFIG" "$URL" create "v1.0:$WORK/bobdist") > "$WORK/20.log" 2>&1
+if grep -qiE "not allowed" "$WORK/20.log" && [[ ! -e "$REL/v1.0/artifacts/x.bin" ]]; then
+    pass "refused: Not allowed"
+else
+    sed 's/^/  | /' "$WORK/20.log" | tail -6; fail "unauthorised release"
+fi
+
+say "21: an artifact is altered on the node, bob fetches again"
+printf 'tampered' >> "$REL/v1.0/artifacts/app-1.0.tar.gz"
+mkdir -p "$WORK/bob/fetch2"
+(cd "$WORK/bob/fetch2" && as bob rngit release --config "$WORK/bob" --rnsconfig "$RNS_CONFIG" "$URL" fetch latest:all --signer "$ALICE") \
+    > "$WORK/21.log" 2>&1
+if grep -q "does not match manifest" "$WORK/21.log" && [[ ! -e "$WORK/bob/fetch2/app-1.0.tar.gz" ]]; then
+    pass "client rejected the altered artifact"
+else
+    sed 's/^/  | /' "$WORK/21.log" | tail -6; fail "tamper detection"
+fi
+
+say "22: alice deletes the release"
+echo y | as alice rngit release --config "$WORK/alice" --rnsconfig "$RNS_CONFIG" "$URL" delete v1.0 > "$WORK/22.log" 2>&1
+if [[ ! -e "$REL/v1.0" ]] && grep -q "deleted" "$WORK/22.log"; then
+    pass "release removed"
+else
+    sed 's/^/  | /' "$WORK/22.log" | tail -6; fail "release delete"
+fi
+
+# ---------------------------------------------------------------------------
 say "Result"
 if [[ $FAILURES -eq 0 ]]; then
-    echo "PASS — stock rngit and git-remote-rns against Core's rngit node: 16 of 16."
+    echo "PASS — stock rngit and git-remote-rns against Core's rngit node: 22 of 22."
 else
     echo "FAIL — $FAILURES check(s) failed. Logs in $WORK/"
 fi

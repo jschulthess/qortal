@@ -23,12 +23,17 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>
  * A repository is materialised into a local bare repository under the cache
  * directory by applying its bundles in order and then setting refs and HEAD
- * exactly as the descriptor states. The cache is a derived view: it is only
- * ever rebuilt from QDN, refreshed when the descriptor's latest transaction
- * changes, and can be deleted at any time.
+ * exactly as the descriptor states. The cache is refreshed when the
+ * descriptor's latest transaction changes.
  * <p>
- * Read-only for now: QDN data is public, so everyone may read, and nothing may
- * be written until publishing is added.
+ * Everyone may read: QDN data is public. A name is writable only on a node
+ * whose publisher account owns it ({@link RngitQdnPublisher}); there its group
+ * rules come from the node's {@code [access]} config and its repositories'
+ * rules from their descriptors. Elsewhere it is read-only.
+ * <p>
+ * The per-repository {@linkplain #lock lock} is held while the cache is
+ * refreshed, written by a push, or published, so a refresh can never roll back
+ * a push that was acknowledged but not yet published.
  */
 @Slf4j
 final class RngitQdnGateway {
@@ -38,16 +43,20 @@ final class RngitQdnGateway {
     static final String APPLIED_FILE = "rngit-qdn-applied";
 
     private final Path cacheRoot;
-    private final Map<String, Group> groups = new ConcurrentHashMap<>();
     private final Map<String, Cached> repositories = new ConcurrentHashMap<>();
+    private final Map<String, Object> locks = new ConcurrentHashMap<>();
+    private volatile RngitRepositories registry;
+    private volatile RngitQdnPublisher publisher;
 
     private static final class Cached {
         final byte[] descriptorSignature;
-        final Repository repository;
+        final RngitQdn.Descriptor descriptor;
+        final Path path;
 
-        Cached(byte[] descriptorSignature, Repository repository) {
+        Cached(byte[] descriptorSignature, RngitQdn.Descriptor descriptor, Path path) {
             this.descriptorSignature = descriptorSignature;
-            this.repository = repository;
+            this.descriptor = descriptor;
+            this.path = path;
         }
     }
 
@@ -55,37 +64,85 @@ final class RngitQdnGateway {
         this.cacheRoot = cacheRoot;
     }
 
-    static PermissionSet readOnly() {
-        return RngitPermissions.fromAllowedInput("r:all", Map.of(), false);
+    void attach(RngitRepositories registry) {
+        this.registry = registry;
+    }
+
+    void setPublisher(RngitQdnPublisher publisher) {
+        this.publisher = publisher;
+    }
+
+    RngitQdnPublisher getPublisher() {
+        return publisher;
+    }
+
+    static String key(String name, String repositoryName) {
+        return name + "/" + repositoryName;
+    }
+
+    /** The lock guarding one cached repository. */
+    Object lock(String name, String repositoryName) {
+        return locks.computeIfAbsent(key(name, repositoryName), k -> new Object());
+    }
+
+    Path cachePath(String name, String repositoryName) {
+        return cacheRoot.resolve(name).resolve(repositoryName);
+    }
+
+    boolean isWritableHere(String name) {
+        RngitQdnPublisher p = this.publisher;
+        return p != null && p.ownsName(name);
+    }
+
+    private PermissionSet groupPermissions(String name) {
+        RngitRepositories r = this.registry;
+        return r == null ? RngitRepositories.readAllPermissions() : r.qdnGroupPermissions(name, isWritableHere(name));
+    }
+
+    private PermissionSet repositoryPermissions(String name, RngitQdn.Descriptor descriptor) {
+        RngitRepositories r = this.registry;
+        return r == null ? RngitRepositories.readAllPermissions()
+                : r.qdnRepositoryPermissions(descriptor.allowed, isWritableHere(name));
     }
 
     /** The group for a registered name, or null. */
     Group group(String name) {
         if (name == null || name.isEmpty() || name.contains("/")) return null;
-        Group cached = groups.get(name);
-        if (cached != null) return cached;
         if (RngitQdn.nameOwner(name) == null) return null;
-        return groups.computeIfAbsent(name, n -> RngitRepositories.qdnGroup(n, cacheRoot.resolve(n), readOnly()));
+        return RngitRepositories.qdnGroup(name, cacheRoot.resolve(name), groupPermissions(name));
     }
 
     /** The materialised repository, or null if QDN holds none under that name. */
     Repository repository(String name, String repositoryName) {
+        Cached cached = refresh(name, repositoryName);
+        return cached == null ? null
+                : RngitRepositories.qdnRepository(repositoryName, name, cached.path, repositoryPermissions(name, cached.descriptor));
+    }
+
+    /** The descriptor the cache currently reflects, or null. */
+    RngitQdn.Descriptor descriptor(String name, String repositoryName) {
+        Cached cached = refresh(name, repositoryName);
+        return cached == null ? null : cached.descriptor;
+    }
+
+    private Cached refresh(String name, String repositoryName) {
         if (group(name) == null || !RngitQdn.isValidRepositoryName(repositoryName)) return null;
 
         byte[] signature = RngitQdn.latestSignature(name, repositoryName);
         if (signature == null) return null;
 
-        String key = name + "/" + repositoryName;
+        String key = key(name, repositoryName);
         Cached cached = repositories.get(key);
-        if (cached != null && Arrays.equals(cached.descriptorSignature, signature)) return cached.repository;
+        if (cached != null && Arrays.equals(cached.descriptorSignature, signature)) return cached;
 
-        synchronized (key.intern()) {
+        synchronized (lock(name, repositoryName)) {
             cached = repositories.get(key);
-            if (cached != null && Arrays.equals(cached.descriptorSignature, signature)) return cached.repository;
+            if (cached != null && Arrays.equals(cached.descriptorSignature, signature)) return cached;
             try {
-                Repository repository = materialise(name, repositoryName);
-                repositories.put(key, new Cached(signature, repository));
-                return repository;
+                RngitQdn.Descriptor descriptor = materialise(name, repositoryName);
+                cached = new Cached(signature, descriptor, cachePath(name, repositoryName));
+                repositories.put(key, cached);
+                return cached;
             } catch (Exception e) {
                 log.warn("Could not materialise QDN repository {}: {}", key, e.getMessage());
                 return null;
@@ -93,11 +150,25 @@ final class RngitQdnGateway {
         }
     }
 
-    private Repository materialise(String name, String repositoryName) throws Exception {
+    /**
+     * Records a descriptor this node just published, so the cache, which already
+     * holds its state, is not rebuilt from QDN. Call while holding the lock.
+     */
+    void markPublished(String name, String repositoryName, byte[] descriptorSignature, RngitQdn.Descriptor descriptor,
+                       String publishedBundle) throws IOException {
+        Path path = cachePath(name, repositoryName);
+        if (publishedBundle != null) {
+            Files.writeString(path.resolve(APPLIED_FILE), publishedBundle + "\n", StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        }
+        repositories.put(key(name, repositoryName), new Cached(descriptorSignature, descriptor, path));
+    }
+
+    private RngitQdn.Descriptor materialise(String name, String repositoryName) throws Exception {
         Path descriptorDir = RngitQdn.readResource(name, repositoryName, READ_TIMEOUT_MS);
         RngitQdn.Descriptor descriptor = RngitQdn.parseDescriptor(descriptorDir);
 
-        Path path = cacheRoot.resolve(name).resolve(repositoryName);
+        Path path = cachePath(name, repositoryName);
         if (!RngitGit.isGitRepository(path)) {
             Files.createDirectories(path);
             RngitGit.initBare(path);
@@ -138,6 +209,6 @@ final class RngitQdnGateway {
 
         log.info("Materialised QDN repository {}/{} ({} bundles, {} refs)", name, repositoryName,
                 descriptor.bundles.size(), descriptor.refs.size());
-        return RngitRepositories.qdnRepository(repositoryName, name, path, readOnly());
+        return descriptor;
     }
 }

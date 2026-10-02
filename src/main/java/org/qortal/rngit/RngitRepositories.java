@@ -85,6 +85,34 @@ public final class RngitRepositories {
 
     void setQdnGateway(RngitQdnGateway qdn) {
         this.qdn = qdn;
+        if (qdn != null) qdn.attach(this);
+    }
+
+    RngitQdnGateway getQdnGateway() {
+        return qdn;
+    }
+
+    /** {@code r:all}: everyone may read public QDN data. */
+    static PermissionSet readAllPermissions() {
+        return RngitPermissions.fromAllowedInput("r:all", Map.of(), false);
+    }
+
+    /**
+     * Rules for a Qortal name's group: read for all, plus, where this node can
+     * publish for the name, the name's {@code [access]} entry from the config.
+     */
+    PermissionSet qdnGroupPermissions(String name, boolean writable) {
+        PermissionSet set = readAllPermissions();
+        List<String> configured = accessConfig.get(name);
+        if (writable && configured != null) RngitPermissions.addRules(set, configured, aliases);
+        return set;
+    }
+
+    /** Rules for a QDN repository: read for all, plus its descriptor's rules where writable. */
+    PermissionSet qdnRepositoryPermissions(String allowed, boolean writable) {
+        PermissionSet set = readAllPermissions();
+        if (writable && allowed != null) set.addAll(RngitPermissions.fromAllowedInput(allowed, aliases, false));
+        return set;
     }
 
     /** A configured group, else the QDN group of a registered name, else null. */

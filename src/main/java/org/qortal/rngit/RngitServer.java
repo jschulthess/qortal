@@ -139,6 +139,10 @@ public class RngitServer {
         if (syncs != null) {
             syncs.shutdownNow();
         }
+        RngitQdnGateway gateway = repositories == null ? null : repositories.getQdnGateway();
+        if (gateway != null && gateway.getPublisher() != null) {
+            gateway.getPublisher().shutdown();
+        }
         for (String linkId : new ArrayList<>(linkTempFiles.keySet())) {
             cleanupLink(linkId);
         }
@@ -199,8 +203,18 @@ public class RngitServer {
         // node run without one (the standalone live-test node) serves local groups only.
         if (config.getBool("qdn", "enabled", true)) {
             if (qdnAvailable()) {
-                repositories.setQdnGateway(new RngitQdnGateway(configDir.resolve("qdn-cache")));
+                RngitQdnGateway gateway = new RngitQdnGateway(configDir.resolve("qdn-cache"));
+                repositories.setQdnGateway(gateway);
                 log.info("rngit QDN gateway enabled: every registered name is a repository group");
+                try {
+                    RngitQdnPublisher publisher = RngitQdnPublisher.load(configDir, gateway);
+                    if (publisher != null) {
+                        gateway.setPublisher(publisher);
+                        log.info("rngit QDN publishing enabled for names owned by {}", publisher.getAddress());
+                    }
+                } catch (Exception e) {
+                    log.error("Could not load the rngit QDN publisher key; QDN repositories stay read-only here", e);
+                }
             } else {
                 log.info("rngit QDN gateway disabled: no Qortal repository available");
             }
@@ -228,15 +242,15 @@ public class RngitServer {
     private void registerRequestHandlers() {
         register(PATH_LIST, this::handleList);
         register(PATH_FETCH, this::handleFetch);
-        register(PATH_PUSH, this::handlePush);
-        register(PATH_DELETE, this::handleDelete);
+        register(PATH_PUSH, request -> qdnWrite(request, this::handlePush));
+        register(PATH_DELETE, request -> qdnWrite(request, this::handleDelete));
         register(PATH_CREATE, this::handleCreate);
-        register(PATH_FORK, request -> handleRemoteClone(request, "fork"));
-        register(PATH_MIRROR, request -> handleRemoteClone(request, "mirror"));
-        register(PATH_SYNC, this::handleSync);
+        register(PATH_FORK, request -> refuseOnQdn(request, null, r -> handleRemoteClone(r, "fork")));
+        register(PATH_MIRROR, request -> refuseOnQdn(request, null, r -> handleRemoteClone(r, "mirror")));
+        register(PATH_SYNC, request -> refuseOnQdn(request, null, this::handleSync));
         register(PATH_PERMS, this::handlePerms);
-        register(PATH_RELEASE, this::handleRelease);
-        register(PATH_WORK, this::handleWork);
+        register(PATH_RELEASE, request -> refuseOnQdn(request, List.of("list", "view", "fetch"), this::handleRelease));
+        register(PATH_WORK, request -> refuseOnQdn(request, List.of("list", "view"), this::handleWork));
     }
 
     private void register(String path, Function<Request, Response> handler) {
@@ -248,6 +262,84 @@ public class RngitServer {
                 return result(RES_REMOTE_FAIL, "Remote error");
             }
         }, RequestPolicy.ALLOW_ALL, null, true);
+    }
+
+    // ------------------------------------------------------------------
+    // QDN-backed repositories
+
+    /** The group/repo a request names, or null. */
+    private static String[] requestedPath(Request request) {
+        Map<Object, Object> data = requestMap(request);
+        return data == null ? null : parseRepositoryPath(intKey(data, IDX_REPOSITORY));
+    }
+
+    private boolean isQdn(String group) {
+        return group != null && repositories.isQdnGroup(group);
+    }
+
+    static boolean isOk(Response response) {
+        return response != null && !response.isFileResponse() && response.getData().length > 0
+                && response.getData()[0] == RES_OK;
+    }
+
+    /**
+     * A write to a QDN repository runs under the repository's lock, so a cache
+     * refresh cannot interleave, and a successful one queues a publish.
+     */
+    private Response qdnWrite(Request request, Function<Request, Response> handler) {
+        String[] path = requestedPath(request);
+        if (path == null || path[1] == null || !isQdn(path[0])) return handler.apply(request);
+
+        RngitQdnGateway gateway = repositories.getQdnGateway();
+        Response response;
+        synchronized (gateway.lock(path[0], path[1])) {
+            response = handler.apply(request);
+        }
+        if (isOk(response) && gateway.getPublisher() != null) {
+            gateway.getPublisher().schedule(path[0], path[1]);
+        }
+        return response;
+    }
+
+    /**
+     * Operations QDN repositories do not support yet: they would write to the
+     * cache, which is rebuilt from QDN and would lose them.
+     *
+     * @param readOperations operations still allowed, or null to refuse all
+     */
+    private Response refuseOnQdn(Request request, List<String> readOperations, Function<Request, Response> handler) {
+        String[] path = requestedPath(request);
+        if (path != null && isQdn(path[0])) {
+            Object operation = requestMap(request).get("operation");
+            if (readOperations == null || !readOperations.contains(operation)) {
+                return result(RES_DISALLOWED, "Not supported for QDN repositories yet");
+            }
+        }
+        return handler.apply(request);
+    }
+
+    /** {@code /git/create} under a Qortal name: publishes a new descriptor. */
+    private Response handleCreateQdn(Request request, String name, String repositoryName) {
+        String remote = remoteHash(request);
+        boolean readAccess = repositories.resolveGroupPermission(remote, name, Permission.READ);
+        boolean createAccess = repositories.resolveGroupPermission(remote, name, Permission.CREATE);
+        if (!createAccess) return readAccess ? result(RES_DISALLOWED, "Not allowed") : result(RES_NOT_FOUND, "Not found");
+        if (!RngitQdn.isValidRepositoryName(repositoryName)) {
+            return result(RES_INVALID_REQ, "Repository names on QDN are at most " + RngitQdn.MAX_REPOSITORY_NAME
+                    + " characters, without ~");
+        }
+        if (RngitQdn.latestSignature(name, repositoryName) != null) return result(RES_DISALLOWED, "Repository already exists");
+
+        RngitQdnPublisher publisher = repositories.getQdnGateway().getPublisher();
+        if (publisher == null || !publisher.ownsName(name)) return result(RES_DISALLOWED, "Not allowed");
+        try {
+            log.info("Creating QDN repository {}/{} for {}", name, repositoryName, remote);
+            publisher.create(name, repositoryName, remote);
+            return ok();
+        } catch (Exception e) {
+            log.error("Could not publish new repository {}/{}", name, repositoryName, e);
+            return result(RES_REMOTE_FAIL, "Could not publish repository: " + e.getMessage());
+        }
     }
 
     // ------------------------------------------------------------------
@@ -588,6 +680,7 @@ public class RngitServer {
         if (path[0] == null || path[1] == null) return result(RES_INVALID_REQ, "Invalid request");
         Group group = repositories.getGroup(path[0]);
         if (group == null) return result(RES_NOT_FOUND, "Not found");
+        if (isQdn(path[0])) return handleCreateQdn(request, path[0], path[1]);
 
         String remote = remoteHash(request);
         boolean readAccess = repositories.resolveGroupPermission(remote, path[0], Permission.READ);
@@ -926,6 +1019,7 @@ public class RngitServer {
             String groupName = parseGroupPath(intKey(data, IDX_GROUP));
             if (!repositories.resolveGroupPermission(remote, groupName, Permission.READ)) return result(RES_NOT_FOUND, "Not found");
             if (!repositories.resolveGroupPermission(remote, groupName, Permission.ADMIN)) return result(RES_DISALLOWED, "Not allowed");
+            if (isQdn(groupName)) return result(RES_DISALLOWED, "Rules for a Qortal name's group are set in the node's config");
 
             Group group = repositories.getGroup(groupName);
             Path allowed = Path.of(group.getPath() + ".allowed");
@@ -938,12 +1032,43 @@ public class RngitServer {
             boolean adminAccess = repositories.resolvePermission(remote, path[0], path[1], Permission.ADMIN);
             if (!adminAccess) return readAccess ? result(RES_DISALLOWED, "Not allowed") : result(RES_NOT_FOUND, "Not found");
 
+            if (isQdn(path[0])) return qdnPermissionsStep(data, path[0], path[1], remote);
+
             Repository repository = repositories.getRepository(path[0], path[1]);
             Path allowed = Path.of(repository.getPath() + ".allowed");
             return permissionsStep(data, allowed, () -> repositories.updateRepositoryPermissions(repository),
                     "repository " + path[0] + "/" + path[1], remote);
         }
         return result(RES_INVALID_REQ, "Invalid request");
+    }
+
+    /** The get and set steps for a QDN repository, whose rules live in its descriptor. */
+    private Response qdnPermissionsStep(Map<Object, Object> data, String name, String repositoryName, String remote) {
+        RngitQdnGateway gateway = repositories.getQdnGateway();
+        Object step = data.get("step");
+        if (step == null || "".equals(step)) return result(RES_INVALID_REQ, "Invalid request");
+
+        if ("get".equals(step)) {
+            RngitQdn.Descriptor descriptor = gateway.descriptor(name, repositoryName);
+            if (descriptor == null) return result(RES_REMOTE_FAIL, "Error getting permissions");
+            return RngitReleases.packed(Map.of("content", descriptor.allowed == null ? "" : descriptor.allowed));
+        }
+        if ("set".equals(step)) {
+            Object contentValue = data.getOrDefault("content", "");
+            if (!(contentValue instanceof String)) return result(RES_INVALID_REQ, "Invalid request");
+            String invalid = repositories.validateAllowedContent((String) contentValue);
+            if (invalid != null) return result(RES_INVALID_REQ, invalid);
+            if (gateway.getPublisher() == null) return result(RES_DISALLOWED, "Not allowed");
+            try {
+                gateway.getPublisher().setAllowed(name, repositoryName, (String) contentValue);
+                log.info("Permissions for QDN repository {}/{} updated by {}", name, repositoryName, remote);
+                return ok();
+            } catch (Exception e) {
+                log.error("Could not publish permissions for {}/{}", name, repositoryName, e);
+                return result(RES_REMOTE_FAIL, "Error setting permissions");
+            }
+        }
+        return result(RES_INVALID_REQ, "Invalid step");
     }
 
     /** The get and set steps, shared by group and repository permissions. */

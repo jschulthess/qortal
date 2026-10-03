@@ -61,12 +61,13 @@ public class GitResource {
     @Context
     HttpServletRequest request;
 
-    /** Where the registry comes from; replaced in tests, which have no running RNS. */
+    /** Where the server and registry come from; replaced in tests, which have no running RNS. */
+    static Supplier<RngitServer> server = () -> RNS.getInstance().getRngitServer();
     static Supplier<RngitRepositories> registry = GitResource::runningRegistry;
 
     private static RngitRepositories runningRegistry() {
-        RngitServer server = RNS.getInstance().getRngitServer();
-        return server == null ? null : server.getRepositories();
+        RngitServer running = server.get();
+        return running == null ? null : running.getRepositories();
     }
 
     private RngitRepositories repositories() {
@@ -137,6 +138,12 @@ public class GitResource {
                 else refs.put(parts[1], parts[0]);
             }
             out.put("refs", refs);
+            RngitServer running = server.get();
+            if (running != null && running.getDestination() != null) {
+                String destination = org.apache.commons.codec.binary.Hex.encodeHexString(running.getDestination().getHash());
+                out.put("rnsDestination", destination);
+                out.put("cloneUrl", "rns://" + destination + "/" + group + "/" + repository);
+            }
             if (repositories().isQdnGroup(group)) {
                 RngitQdn.Descriptor descriptor = repositories().qdnDescriptor(group, repository);
                 if (descriptor != null) {
@@ -150,6 +157,20 @@ public class GitResource {
         } catch (IOException e) {
             throw failure(e);
         }
+    }
+
+    @GET
+    @Path("/{group}/{repository}/descriptor")
+    @Produces(MediaType.APPLICATION_JSON)
+    @Operation(summary = "A QDN repository's current descriptor (rngit.json), e.g. for its owner to edit and republish",
+            responses = @ApiResponse(description = "descriptor", content = @Content(mediaType = MediaType.APPLICATION_JSON)))
+    @ApiErrors({ApiError.INVALID_CRITERIA, ApiError.FILE_NOT_FOUND})
+    public String getDescriptor(@PathParam("group") String group, @PathParam("repository") String repository) {
+        readable(group, repository);
+        RngitQdn.Descriptor descriptor = repositories().qdnDescriptor(group, repository);
+        if (descriptor == null) throw ApiExceptionFactory.INSTANCE.createCustomException(request, ApiError.FILE_NOT_FOUND,
+                "Only QDN repositories have a descriptor");
+        return json(descriptor);
     }
 
     @GET

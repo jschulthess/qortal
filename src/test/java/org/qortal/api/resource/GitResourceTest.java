@@ -56,6 +56,7 @@ class GitResourceTest {
         RngitRepositories repositories = new RngitRepositories(Map.of(), Map.of(), Set.of());
         repositories.loadGroup("public", group);
         GitResource.registry = () -> repositories;
+        GitResource.server = () -> null;
 
         resource = new GitResource();
         resource.request = mock(HttpServletRequest.class);
@@ -94,6 +95,8 @@ class GitResourceTest {
         assertThrows(ApiException.class, () -> resource.getRepository("public", "missing"));
         assertThrows(ApiException.class, () -> resource.getBlob("public", "open", null, "../secret/config"));
         assertFalse(resource.listRepositories("nogroup").contains("open"));
+        assertThrows(ApiException.class, () -> resource.getDescriptor("public", "open"), "only QDN repositories have one");
+        assertThrows(ApiException.class, () -> resource.getStaged("public", "open"), "only QDN repositories stage");
 
         GitResource.registry = () -> null;
         assertThrows(ApiException.class, () -> resource.listRepositories("public"), "rngit disabled");

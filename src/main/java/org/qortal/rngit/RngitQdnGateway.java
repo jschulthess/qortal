@@ -138,6 +138,12 @@ final class RngitQdnGateway {
         return cached == null ? null : cached.descriptor;
     }
 
+    /** The descriptor last materialised here, without refreshing from QDN, or null. */
+    RngitQdn.Descriptor cachedDescriptor(String name, String repositoryName) {
+        Cached cached = repositories.get(key(name, repositoryName));
+        return cached == null ? null : cached.descriptor;
+    }
+
     private Cached refresh(String name, String repositoryName) {
         if (group(name) == null || !RngitQdn.isValidRepositoryName(repositoryName)) return null;
 

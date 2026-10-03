@@ -148,6 +148,12 @@ public final class RngitRepositories {
         return gateway == null || groups.containsKey(groupName) ? null : gateway.descriptor(groupName, repositoryName);
     }
 
+    /** Like {@link #qdnDescriptor} but never fetches from QDN: null unless already materialised. */
+    public RngitQdn.Descriptor cachedQdnDescriptor(String groupName, String repositoryName) {
+        RngitQdnGateway gateway = this.qdn;
+        return gateway == null || groups.containsKey(groupName) ? null : gateway.cachedDescriptor(groupName, repositoryName);
+    }
+
     /**
      * Resolves Qortal rule targets for rules belonging to {@code groupName}:
      * {@code owner} means the current owner of that group's Qortal name, so it

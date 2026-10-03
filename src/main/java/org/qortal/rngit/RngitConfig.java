@@ -56,6 +56,23 @@ public final class RngitConfig {
             "  # names that key's account owns. After this many bundles, the next",
             "  # push publishes one full bundle replacing them (0: never).",
             "  # compact_after = 16",
+            "",
+            "[pages]",
+            "  # Serve a Nomad Network page node for browsing the repositories,",
+            "  # on the nomadnetwork.node destination of this node's identity.",
+            "  # Access follows the permissions of each group and repository;",
+            "  # visitors that do not identify are the null identity",
+            "  # d7db22f63b453c23bb0688dde565b7c1, which blocked_identities can",
+            "  # list to require identification.",
+            "  #",
+            "  # Custom templates go in the templates directory next to this file:",
+            "  # base, front, group, repo, tree, blob, commits, commit, refs,",
+            "  # stats, releases, release, work and work_doc, each <name>.mu with",
+            "  # a {PAGE_CONTENT} variable; an executable template is run and its",
+            "  # output used.",
+            "  # serve_nomadnet = no",
+            "  # Use plain unicode icons instead of Nerd Font icons.",
+            "  # unicode_icons = yes",
             "");
 
     /** The section holding keys that appear before any section header. */

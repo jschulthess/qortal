@@ -38,6 +38,10 @@
 #  27  bob:   rngit work edit -d 1                   -> refused, not the author
 #  28  alice: rngit work complete -d 1               -> moved to completed
 #  29  alice: rngit work delete -d 1                 -> removed (the reference fails here)
+#  30  anonymous Nomad Network visitor: front page     -> group "public" listed
+#  31  anonymous visitor: public/repo page            -> clone URL, commit count, README
+#  32  anonymous visitor: download README.md          -> file response named README.md
+#  33  bob, identified: /media for the 3 MiB blob     -> same bytes as the repository
 #
 # Usage:  ./run.sh       (RNS_SRC defaults to ~/git/Reticulum)
 #         RETICULUM_CLASSES=~/git/reticulum-network-stack-own/target/classes ./run.sh
@@ -116,6 +120,9 @@ cat > "$WORK/rngit/config" <<EOF
 
 [access]
   public = r:all, c:alice
+
+[pages]
+  serve_nomadnet = yes
 EOF
 
 # --- Upstreams for the fork and mirror steps --------------------------------
@@ -503,9 +510,57 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# The Nomad Network page node, as Nomad Network's browser uses it
+pages() {  # pages <name> <requests-json> [identity-file]
+    printf '%s' "$2" > "$WORK/$1.json"
+    timeout 300 python3 "$HERE/pages_client.py" "$RNS_CONFIG" "$DEST" "$WORK/$1.json" ${3:-} > "$WORK/$1.out" 2> "$WORK/$1.err"
+}
+response() {  # response <name> <n>: the n-th response line (1-based) of a pages run
+    grep -v '"page_node"' "$WORK/$1.out" | sed -n "${2}p"
+}
+
+say "30: an anonymous visitor opens the front page"
+pages p30 '[{"path": "/page/index.mu"}]'
+if response p30 1 | grep -q 'group.mu`g=public\]' && response p30 1 | grep -q "Served by rngit"; then
+    pass "group public listed"
+else
+    sed 's/^/  | /' "$WORK/p30.out" "$WORK/p30.err" | tail -5; fail "front page"
+fi
+
+say "31: the visitor opens public/repo"
+pages p31 '[{"path": "/page/repo.mu", "data": {"var_g": "public", "var_r": "repo"}}]'
+COUNT="$(git -C "$REPO" rev-list --count HEAD 2>/dev/null)"
+if response p31 1 | grep -q "rns://$DEST/public/repo" && response p31 1 | grep -q "Commits ($COUNT)"; then
+    pass "clone URL and $COUNT commits shown"
+else
+    sed 's/^/  | /' "$WORK/p31.out" "$WORK/p31.err" | tail -5; fail "repository page"
+fi
+
+say "32: the visitor downloads README.md"
+pages p32 '[{"path": "/file/download", "data": {"var_g": "public", "var_r": "repo", "var_ref": "HEAD", "var_path": "README.md"}}]'
+WANT="$(git -C "$REPO" show HEAD:README.md | xxd -p | tr -d '\n')"
+if response p32 1 | python3 -c "import json,sys; r = json.load(sys.stdin); sys.exit(0 if r.get('name') == 'README.md' and r['file'] == '$WANT' else 1)"; then
+    pass "file response named README.md with the repository's content"
+else
+    sed 's/^/  | /' "$WORK/p32.out" "$WORK/p32.err" | tail -5; fail "download"
+fi
+
+say "33: bob, identified, fetches the 3 MiB blob as media"
+pages p33 '[{"path": "/media", "data": {"key": "k", "path": "/media/public/repo/HEAD/blob.bin"}}]' "$WORK/bob/client_identity"
+git -C "$REPO" show HEAD:blob.bin > "$WORK/p33.want"
+if response p33 1 | python3 -c "
+import json, sys
+r = json.load(sys.stdin)
+sys.exit(0 if r.get('name') == 'blob.bin' and bytes.fromhex(r['file']) == open('$WORK/p33.want', 'rb').read() else 1)"; then
+    pass "3 MiB delivered intact"
+else
+    head -c 300 "$WORK/p33.out" | sed 's/^/  | /'; sed 's/^/  | /' "$WORK/p33.err" | tail -5; fail "media"
+fi
+
+# ---------------------------------------------------------------------------
 say "Result"
 if [[ $FAILURES -eq 0 ]]; then
-    echo "PASS — stock rngit and git-remote-rns against Core's rngit node: 29 of 29."
+    echo "PASS — stock rngit and git-remote-rns against Core's rngit node: 33 of 33."
 else
     echo "FAIL — $FAILURES check(s) failed. Logs in $WORK/"
 fi

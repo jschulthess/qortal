@@ -106,11 +106,26 @@ final class RngitReleases {
     // ------------------------------------------------------------------
     // Reading
 
-    /** {@code _release_list} / {@code releases_list_data}. */
-    Response list() {
-        if (!Files.isDirectory(releasesPath)) return packed(List.of());
+    /** Releases newest first, and the latest tag if it is published: {@code releases_list_data}. */
+    static final class ListData {
+        final List<Map<String, Object>> releases;
+        final String latest;
 
+        ListData(List<Map<String, Object>> releases, String latest) {
+            this.releases = releases;
+            this.latest = latest;
+        }
+    }
+
+    Path getReleasesPath() {
+        return releasesPath;
+    }
+
+    /** {@code releases_list_data}: null when the releases directory cannot be listed. */
+    ListData listData() {
         List<Map<String, Object>> releases = new ArrayList<>();
+        if (!Files.isDirectory(releasesPath)) return new ListData(releases, null);
+
         Map<String, Boolean> published = new LinkedHashMap<>();
         try (Stream<Path> entries = Files.list(releasesPath)) {
             for (Path releaseDir : (Iterable<Path>) entries::iterator) {
@@ -153,16 +168,24 @@ final class RngitReleases {
             }
         } catch (IOException e) {
             log.error("Error listing releases for {}", releasesPath, e);
-            return result(RES_REMOTE_FAIL, "Error listing releases");
+            return null;
         }
 
         String latest = readLatest();
         String latestRelease = latest != null && Boolean.TRUE.equals(published.get(latest)) ? latest : null;
         releases.sort(Comparator.comparing((Map<String, Object> r) -> (Long) r.get("created")).reversed());
+        return new ListData(releases, latestRelease);
+    }
+
+    /** {@code _release_list}. */
+    Response list() {
+        if (!Files.isDirectory(releasesPath)) return packed(List.of());
+        ListData list = listData();
+        if (list == null) return result(RES_REMOTE_FAIL, "Error listing releases");
 
         Map<String, Object> data = new LinkedHashMap<>();
-        data.put("releases", releases);
-        data.put("latest", latestRelease);
+        data.put("releases", list.releases);
+        data.put("latest", list.latest);
         return packed(data);
     }
 
@@ -176,16 +199,12 @@ final class RngitReleases {
         }
     }
 
-    /** {@code _release_view} / {@code release_data}. */
-    Response view(Map<Object, Object> data) {
-        String requested = pathComponent(data.get("tag"));
-        if (requested == null) return result(RES_INVALID_REQ, "Invalid tag specified");
-        String tag = resolveTag(requested);
-        if (tag == null) return result(RES_NOT_FOUND, "No latest release found");
-
-        Path releaseDir = releasesPath.resolve(tag);
-        if (pathComponent(tag) == null || !Files.isDirectory(releaseDir)) return result(RES_NOT_FOUND, "Release not found");
-
+    /** {@code release_data}: a release's metadata, notes and artifacts, or null. */
+    static Map<String, Object> releaseData(Path releaseDir, String tag) {
+        if (!Files.isRegularFile(releaseDir.resolve("META"))) {
+            log.error("Release metadata missing for {}/{}", releaseDir, tag);
+            return null;
+        }
         try {
             RngitConfig meta = readMeta(releaseDir);
             Map<String, Object> info = new LinkedHashMap<>();
@@ -217,11 +236,25 @@ final class RngitReleases {
             }
             info.put("artifacts", artifacts);
             info.put("thanks", thanksCount(releaseDir));
-            return packed(info);
+            return info;
         } catch (Exception e) {
             log.error("Error while getting release data for {}", releaseDir, e);
-            return result(RES_REMOTE_FAIL, "Error getting release data");
+            return null;
         }
+    }
+
+    /** {@code _release_view}. */
+    Response view(Map<Object, Object> data) {
+        String requested = pathComponent(data.get("tag"));
+        if (requested == null) return result(RES_INVALID_REQ, "Invalid tag specified");
+        String tag = resolveTag(requested);
+        if (tag == null) return result(RES_NOT_FOUND, "No latest release found");
+
+        Path releaseDir = releasesPath.resolve(tag);
+        if (pathComponent(tag) == null || !Files.isDirectory(releaseDir)) return result(RES_NOT_FOUND, "Release not found");
+
+        Map<String, Object> info = releaseData(releaseDir, tag);
+        return info == null ? result(RES_REMOTE_FAIL, "Error getting release data") : packed(info);
     }
 
     private static long thanksCount(Path releaseDir) {

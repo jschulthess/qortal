@@ -249,6 +249,7 @@ public class RNS {
         }
         try {
             RngitServer server = new RngitServer(Paths.get(Settings.getInstance().getRngitConfigPath()));
+            server.setVersion(Controller.getInstance().getVersionString());
             server.start();
             this.rngitServer = server;
         } catch (Exception e) {

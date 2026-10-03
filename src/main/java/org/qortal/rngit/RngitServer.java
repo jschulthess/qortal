@@ -49,7 +49,8 @@ import static org.qortal.rngit.RngitProtocol.*;
  * mirrors and upstream sync ({@code /git/fork}, {@code /git/mirror},
  * {@code /git/sync}) with periodic mirror syncing, remote permission
  * management ({@code /mgmt/perms}), releases ({@code /mgmt/release}) and work
- * documents ({@code /mgmt/work}). Responses
+ * documents ({@code /mgmt/work}), and with {@code [pages] serve_nomadnet} the
+ * Nomad Network page node ({@link RngitPages}) on the same identity. Responses
  * match the reference byte for byte, including its choice of "Not found" over
  * "Not allowed" where revealing a repository's existence would leak it.
  * <p>
@@ -94,6 +95,13 @@ public class RngitServer {
     /** Fetch bundles still being transferred on a link; removed when the link goes. */
     private final Map<String, List<Path>> linkTempFiles = new ConcurrentHashMap<>();
 
+    /** The Nomad Network page node, when {@code [pages] serve_nomadnet} is set; else null. */
+    @Getter
+    private RngitPages pages;
+    /** Shown in the page footer; Core sets its build version. */
+    @lombok.Setter
+    private String version = "unknown";
+
     private ScheduledExecutorService jobs;
     /** Runs periodic mirror syncs, which can take long, off the jobs thread. */
     private ExecutorService syncs;
@@ -117,6 +125,12 @@ public class RngitServer {
         this.destination.setLinkEstablishedCallback(this::remoteConnected);
         registerRequestHandlers();
 
+        if (config.getBool("pages", "serve_nomadnet", false)) {
+            this.pages = new RngitPages(identity, nodeName, announceIntervalMillis, repositories, destination.getHash(),
+                    configDir, config, version);
+            this.pages.start();
+        }
+
         this.jobs = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "rngit-jobs");
             t.setDaemon(true);
@@ -138,6 +152,9 @@ public class RngitServer {
         }
         if (syncs != null) {
             syncs.shutdownNow();
+        }
+        if (pages != null) {
+            pages.shutdown();
         }
         RngitQdnGateway gateway = repositories == null ? null : repositories.getQdnGateway();
         if (gateway != null && gateway.getPublisher() != null) {
@@ -452,6 +469,8 @@ public class RngitServer {
                     cleanupLink(entry.getKey());
                 }
             }
+
+            if (pages != null) pages.runJobs(now);
         } catch (Exception e) {
             log.error("Error while running rngit periodic jobs", e);
         }

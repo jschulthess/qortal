@@ -128,6 +128,22 @@ public final class RngitQdn {
         }
     }
 
+    /** The repositories QDN holds under a name: its descriptors, not its bundles. */
+    public static List<String> listRepositories(String name) {
+        List<String> out = new ArrayList<>();
+        try (Repository repository = RepositoryManager.getRepository()) {
+            for (var resource : repository.getArbitraryRepository().getArbitraryResources(SERVICE, null, List.of(name),
+                    false, null, null, false, false, null, null, false)) {
+                String identifier = resource.identifier;
+                if (identifier != null && !identifier.equals("default") && !identifier.contains("~")) out.add(identifier);
+            }
+        } catch (DataException e) {
+            log.warn("Could not list repositories under {}: {}", name, e.getMessage());
+        }
+        out.sort(String::compareTo);
+        return out;
+    }
+
     // ------------------------------------------------------------------
     // Reading
 

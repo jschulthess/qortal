@@ -8,6 +8,7 @@ import org.qortal.rngit.RngitPermissions.PermissionSet;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -98,6 +99,17 @@ public final class RngitRepositories {
         this.bindings = bindings;
     }
 
+    /** The account to RNS identity lookups, or null without Qortal state. */
+    public RngitIdentityBindings getIdentityBindings() {
+        return bindings;
+    }
+
+    /** The descriptor a QDN repository's cache reflects, or null. */
+    public RngitQdn.Descriptor qdnDescriptor(String groupName, String repositoryName) {
+        RngitQdnGateway gateway = this.qdn;
+        return gateway == null || groups.containsKey(groupName) ? null : gateway.descriptor(groupName, repositoryName);
+    }
+
     /**
      * Resolves Qortal rule targets for rules belonging to {@code groupName}:
      * {@code owner} means the current owner of that group's Qortal name, so it
@@ -159,6 +171,28 @@ public final class RngitRepositories {
         if (local != null) return local.repositories.get(repositoryName);
         RngitQdnGateway gateway = this.qdn;
         return gateway == null ? null : gateway.repository(groupName, repositoryName);
+    }
+
+    /** No identity: what the anonymous REST API may see is what {@code all} rules grant. */
+    static final String ANONYMOUS = "";
+
+    /** Whether anyone may read the repository: always for QDN, by {@code r:all} for configured ones. */
+    public boolean isPubliclyReadable(String groupName, String repositoryName) {
+        return resolvePermission(ANONYMOUS, groupName, repositoryName, Permission.READ);
+    }
+
+    /** Repository names in a group that anyone may read. */
+    public List<String> publicRepositories(String groupName) {
+        Group local = groups.get(groupName);
+        if (local != null) {
+            List<String> out = new ArrayList<>();
+            for (String name : local.repositories.keySet()) {
+                if (isPubliclyReadable(groupName, name)) out.add(name);
+            }
+            out.sort(String::compareTo);
+            return out;
+        }
+        return isQdnGroup(groupName) ? RngitQdn.listRepositories(groupName) : List.of();
     }
 
     /** Whether a group comes from QDN rather than the config. */

@@ -273,6 +273,11 @@ public class RNS {
                 announcedVersions, getMessageMagic(), peers::addLinkedPeer));
     }
 
+    /** The rngit repository node, or null when it is not enabled or did not start. */
+    public RngitServer getRngitServer() {
+        return rngitServer;
+    }
+
     public boolean isMeshStarted() {
         return meshStarted;
     }

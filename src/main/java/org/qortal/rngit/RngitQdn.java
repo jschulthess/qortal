@@ -91,12 +91,33 @@ public final class RngitQdn {
                 && !repository.contains("~") && !repository.contains("/") && !repository.equals(".") && !repository.equals("..");
     }
 
+    /**
+     * The file a resource holds: {@code preferred} when present, otherwise its
+     * only file. Resources published as a single base64 file (as Q-Apps do
+     * through Hub) keep whatever filename the publisher gave, or none.
+     */
+    public static Path fileIn(Path resource, String preferred) throws IOException {
+        if (Files.isRegularFile(resource)) return resource;
+        Path named = resource.resolve(preferred);
+        if (Files.isRegularFile(named)) return named;
+        try (var files = Files.list(resource)) {
+            List<Path> found = new ArrayList<>();
+            files.filter(Files::isRegularFile).filter(p -> !p.getFileName().toString().startsWith(".")).forEach(found::add);
+            if (found.size() == 1) return found.get(0);
+        }
+        throw new IOException("Resource " + resource + " holds no " + preferred);
+    }
+
     public static Descriptor parseDescriptor(Path directory) throws IOException {
-        Descriptor descriptor = JSON.readValue(directory.resolve(DESCRIPTOR_FILE).toFile(), Descriptor.class);
+        Descriptor descriptor = JSON.readValue(fileIn(directory, DESCRIPTOR_FILE).toFile(), Descriptor.class);
         if (!FORMAT.equals(descriptor.format)) {
             throw new IOException("Unsupported descriptor format " + descriptor.format);
         }
         return descriptor;
+    }
+
+    public static byte[] descriptorBytes(Descriptor descriptor) throws IOException {
+        return JSON.writerWithDefaultPrettyPrinter().writeValueAsBytes(descriptor);
     }
 
     public static void writeDescriptor(Descriptor descriptor, Path directory) throws IOException {

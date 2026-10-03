@@ -204,6 +204,7 @@ public class RngitServer {
         if (config.getBool("qdn", "enabled", true)) {
             if (qdnAvailable()) {
                 RngitQdnGateway gateway = new RngitQdnGateway(configDir.resolve("qdn-cache"));
+                gateway.setStaging(new RngitQdnStaging(configDir.resolve("qdn-staging"), gateway));
                 repositories.setQdnGateway(gateway);
                 repositories.setIdentityBindings(new RngitIdentityBindings());
                 log.info("rngit QDN gateway enabled: every registered name is a repository group");
@@ -293,6 +294,8 @@ public class RngitServer {
         if (path == null || path[1] == null || !isQdn(path[0])) return handler.apply(request);
 
         RngitQdnGateway gateway = repositories.getQdnGateway();
+        if (!gateway.isWritableHere(path[0])) return stage(request, path[0], path[1]);
+
         Response response;
         synchronized (gateway.lock(path[0], path[1])) {
             response = handler.apply(request);
@@ -301,6 +304,65 @@ public class RngitServer {
             gateway.getPublisher().schedule(path[0], path[1]);
         }
         return response;
+    }
+
+    /**
+     * Push flow 2: on a node that cannot publish for the name, a permitted push
+     * or ref delete is staged for the owner instead of applied. The pusher is
+     * told so with a refusal, because the repository has not changed yet.
+     */
+    @SuppressWarnings("unchecked")
+    private Response stage(Request request, String name, String repositoryName) {
+        Map<Object, Object> data = requestMap(request);
+        Response refused = precheck("Staged push", request, data);
+        if (refused != null) return refused;
+
+        String remote = remoteHash(request);
+        boolean readAccess = repositories.resolvePermission(remote, name, repositoryName, Permission.READ);
+        boolean writeAccess = repositories.resolvePermission(remote, name, repositoryName, Permission.WRITE);
+        if (!writeAccess) return readAccess ? result(RES_DISALLOWED, "Not allowed") : result(RES_NOT_FOUND, "Not found");
+
+        RngitQdnStaging.Change change = new RngitQdnStaging.Change();
+        change.pusher = remote;
+        byte[] bundle = null;
+
+        Object bundleData = data.get("bundle");
+        if (bundleData instanceof String) bundleData = ((String) bundleData).getBytes(StandardCharsets.UTF_8);
+        Object operations = data.get("operations");
+        if (data.containsKey("ref") && !data.containsKey("local_ref")) {
+            change.kind = "delete";
+            change.ref = data.get("ref") instanceof String ? RngitRefs.sanRef((String) data.get("ref")) : null;
+            if (change.ref == null || !change.ref.startsWith("refs/")) return result(RES_INVALID_REQ, "Invalid request");
+        } else if (bundleData instanceof byte[] && ((byte[]) bundleData).length > 0) {
+            change.kind = "bundle";
+            change.localRef = data.get("local_ref") instanceof String ? RngitRefs.sanRef((String) data.get("local_ref")) : null;
+            change.ref = data.get("remote_ref") instanceof String ? RngitRefs.sanRef((String) data.get("remote_ref")) : null;
+            change.force = Boolean.TRUE.equals(data.get("force"));
+            if (change.localRef == null || change.ref == null) return result(RES_INVALID_REQ, "Missing ref specification");
+            bundle = (byte[]) bundleData;
+        } else if (operations instanceof List && ((List<Object>) operations).size() == 1
+                && ((List<Object>) operations).get(0) instanceof Map) {
+            Map<Object, Object> op = (Map<Object, Object>) ((List<Object>) operations).get(0);
+            if (!"update_ref".equals(op.get("action"))) return result(RES_INVALID_REQ, "Unknown operation: " + op.get("action"));
+            change.kind = "update_ref";
+            change.ref = op.get("ref") instanceof String ? RngitRefs.sanRef((String) op.get("ref")) : null;
+            change.sha = op.get("sha") instanceof String ? RngitRefs.sanSha((String) op.get("sha")) : null;
+            change.force = Boolean.TRUE.equals(op.get("force"));
+            if (change.ref == null || !change.ref.startsWith("refs/")) return result(RES_INVALID_REQ, "Invalid request");
+            if (change.sha == null) return result(RES_INVALID_REQ, "Invalid SHA");
+        } else {
+            return result(RES_INVALID_REQ, "Invalid request data");
+        }
+
+        try {
+            RngitQdnStaging.Change staged = repositories.getQdnGateway().getStaging().stage(name, repositoryName, change, bundle);
+            return result(RES_DISALLOWED, "Staged as #" + staged.id + ", awaiting the owner's approval");
+        } catch (RngitQdnStaging.ConflictException e) {
+            return result(RES_DISALLOWED, e.getMessage());
+        } catch (Exception e) {
+            log.error("Could not stage a change to {}/{}", name, repositoryName, e);
+            return result(RES_REMOTE_FAIL, "Could not stage the change");
+        }
     }
 
     /**
@@ -1060,7 +1122,7 @@ public class RngitServer {
             if (!(contentValue instanceof String)) return result(RES_INVALID_REQ, "Invalid request");
             String invalid = repositories.validateAllowedContent((String) contentValue);
             if (invalid != null) return result(RES_INVALID_REQ, invalid);
-            if (gateway.getPublisher() == null) return result(RES_DISALLOWED, "Not allowed");
+            if (!gateway.isWritableHere(name)) return result(RES_DISALLOWED, "Rules are published by the node holding the name owner's key");
             try {
                 gateway.getPublisher().setAllowed(name, repositoryName, (String) contentValue);
                 log.info("Permissions for QDN repository {}/{} updated by {}", name, repositoryName, remote);

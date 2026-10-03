@@ -104,6 +104,44 @@ public final class RngitRepositories {
         return bindings;
     }
 
+    /** Staged changes awaiting the owner, as plain maps, or null if this is no QDN repository. */
+    public List<Map<String, Object>> stagedChanges(String groupName, String repositoryName) throws IOException {
+        RngitQdnGateway gateway = this.qdn;
+        if (gateway == null || gateway.getStaging() == null || !isQdnGroup(groupName)) return null;
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (RngitQdnStaging.Change change : gateway.getStaging().list(groupName, repositoryName)) {
+            Map<String, Object> entry = new java.util.LinkedHashMap<>();
+            entry.put("id", change.id);
+            entry.put("kind", change.kind);
+            entry.put("ref", change.ref);
+            entry.put("base", change.base);
+            entry.put("sha", change.sha);
+            entry.put("force", change.force);
+            entry.put("pusher", change.pusher);
+            entry.put("created", change.created);
+            entry.put("applies", gateway.getStaging().applies(groupName, repositoryName, change));
+            out.add(entry);
+        }
+        return out;
+    }
+
+    /**
+     * The resources that publish a staged change, for Hub's
+     * PUBLISH_MULTIPLE_QDN_RESOURCES, or null if there is no such change.
+     *
+     * @throws Exception if the change no longer applies to the current state
+     */
+    public Map<String, Object> prepareStagedChange(String groupName, String repositoryName, long id) throws Exception {
+        RngitQdnGateway gateway = this.qdn;
+        if (gateway == null || gateway.getStaging() == null || !isQdnGroup(groupName)) return null;
+        return gateway.getStaging().prepare(groupName, repositoryName, id);
+    }
+
+    public boolean removeStagedChange(String groupName, String repositoryName, long id) {
+        RngitQdnGateway gateway = this.qdn;
+        return gateway != null && gateway.getStaging() != null && gateway.getStaging().remove(groupName, repositoryName, id);
+    }
+
     /** The descriptor a QDN repository's cache reflects, or null. */
     public RngitQdn.Descriptor qdnDescriptor(String groupName, String repositoryName) {
         RngitQdnGateway gateway = this.qdn;

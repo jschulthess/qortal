@@ -7,10 +7,12 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.qortal.api.ApiError;
 import org.qortal.api.ApiErrors;
 import org.qortal.api.ApiExceptionFactory;
+import org.qortal.api.Security;
 import org.qortal.crypto.Crypto;
 import org.qortal.network.reticulum.RNS;
 import org.qortal.rngit.RngitBrowse;
@@ -21,8 +23,10 @@ import org.qortal.rngit.RngitRepositories;
 import org.qortal.rngit.RngitServer;
 
 import javax.servlet.http.HttpServletRequest;
+import javax.ws.rs.DELETE;
 import javax.ws.rs.DefaultValue;
 import javax.ws.rs.GET;
+import javax.ws.rs.HeaderParam;
 import javax.ws.rs.Path;
 import javax.ws.rs.PathParam;
 import javax.ws.rs.Produces;
@@ -208,6 +212,64 @@ public class GitResource {
         } catch (IOException | RngitBrowse.NotFoundException e) {
             throw failure(e);
         }
+    }
+
+    @GET
+    @Path("/{group}/{repository}/staged")
+    @Produces(MediaType.APPLICATION_JSON)
+    @Operation(summary = "Changes pushed through this node and staged for the name owner to publish",
+            description = "On a node that cannot publish for a Qortal name, permitted pushes are staged instead. "
+                    + "\"applies\" tells whether a change still applies to the repository's current state.",
+            responses = @ApiResponse(description = "staged changes", content = @Content(mediaType = MediaType.APPLICATION_JSON)))
+    @ApiErrors({ApiError.INVALID_CRITERIA, ApiError.FILE_NOT_FOUND})
+    public String getStaged(@PathParam("group") String group, @PathParam("repository") String repository) {
+        readable(group, repository);
+        try {
+            List<Map<String, Object>> staged = repositories().stagedChanges(group, repository);
+            if (staged == null) throw ApiExceptionFactory.INSTANCE.createCustomException(request, ApiError.INVALID_CRITERIA,
+                    "Only QDN repositories have staged changes");
+            return json(staged);
+        } catch (IOException e) {
+            throw failure(e);
+        }
+    }
+
+    @GET
+    @Path("/{group}/{repository}/staged/{id}/publish")
+    @Produces(MediaType.APPLICATION_JSON)
+    @Operation(summary = "The QDN resources that publish a staged change",
+            description = "Prepared against the repository's current descriptor: a bundle with the new objects (if any) "
+                    + "and the updated descriptor, each a base64 file. Pass \"resources\" to qortalRequest "
+                    + "PUBLISH_MULTIPLE_QDN_RESOURCES as the name owner; the change is cleared once the published "
+                    + "descriptor reflects it.",
+            responses = @ApiResponse(description = "resources to publish", content = @Content(mediaType = MediaType.APPLICATION_JSON)))
+    @ApiErrors({ApiError.INVALID_CRITERIA, ApiError.FILE_NOT_FOUND})
+    public String getStagedPublish(@PathParam("group") String group, @PathParam("repository") String repository,
+                                   @PathParam("id") long id) {
+        readable(group, repository);
+        try {
+            Map<String, Object> prepared = repositories().prepareStagedChange(group, repository, id);
+            if (prepared == null) throw ApiExceptionFactory.INSTANCE.createCustomException(request, ApiError.FILE_NOT_FOUND,
+                    "No staged change #" + id);
+            return json(prepared);
+        } catch (org.qortal.api.ApiException e) {
+            throw e;
+        } catch (Exception e) {
+            throw ApiExceptionFactory.INSTANCE.createCustomException(request, ApiError.INVALID_CRITERIA,
+                    "Staged change #" + id + " no longer applies: " + e.getMessage());
+        }
+    }
+
+    @DELETE
+    @Path("/{group}/{repository}/staged/{id}")
+    @Operation(summary = "Discard a staged change (node operator)",
+            responses = @ApiResponse(description = "true if removed", content = @Content(mediaType = MediaType.TEXT_PLAIN)))
+    @SecurityRequirement(name = "apiKey")
+    @ApiErrors({ApiError.INVALID_CRITERIA, ApiError.UNAUTHORIZED})
+    public String deleteStaged(@HeaderParam(Security.API_KEY_HEADER) String apiKey, @PathParam("group") String group,
+                               @PathParam("repository") String repository, @PathParam("id") long id) {
+        Security.checkApiCallAllowed(request);
+        return Boolean.toString(repositories().removeStagedChange(group, repository, id));
     }
 
     @GET

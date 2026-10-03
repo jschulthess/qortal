@@ -47,6 +47,7 @@ final class RngitQdnGateway {
     private final Map<String, Object> locks = new ConcurrentHashMap<>();
     private volatile RngitRepositories registry;
     private volatile RngitQdnPublisher publisher;
+    private volatile RngitQdnStaging staging;
 
     private static final class Cached {
         final byte[] descriptorSignature;
@@ -76,6 +77,14 @@ final class RngitQdnGateway {
         return publisher;
     }
 
+    void setStaging(RngitQdnStaging staging) {
+        this.staging = staging;
+    }
+
+    RngitQdnStaging getStaging() {
+        return staging;
+    }
+
     static String key(String name, String repositoryName) {
         return name + "/" + repositoryName;
     }
@@ -99,10 +108,14 @@ final class RngitQdnGateway {
         return r == null ? RngitRepositories.readAllPermissions() : r.qdnGroupPermissions(name, isWritableHere(name));
     }
 
+    /**
+     * A repository's rules come from its descriptor on every node; whether an
+     * allowed write is published here or staged for the owner depends on
+     * {@link #isWritableHere}.
+     */
     private PermissionSet repositoryPermissions(String name, RngitQdn.Descriptor descriptor) {
         RngitRepositories r = this.registry;
-        return r == null ? RngitRepositories.readAllPermissions()
-                : r.qdnRepositoryPermissions(descriptor.allowed, isWritableHere(name));
+        return r == null ? RngitRepositories.readAllPermissions() : r.qdnRepositoryPermissions(descriptor.allowed, true);
     }
 
     /** The group for a registered name, or null. */
@@ -184,7 +197,7 @@ final class RngitQdnGateway {
                 throw new IOException("Bundle " + bundleId + " does not belong to " + repositoryName);
             }
             Path bundleDir = RngitQdn.readResource(name, bundleId, READ_TIMEOUT_MS);
-            RngitGit.Result result = RngitGit.applyBundleAllRefs(path, bundleDir.resolve(RngitQdn.BUNDLE_FILE));
+            RngitGit.Result result = RngitGit.applyBundleAllRefs(path, RngitQdn.fileIn(bundleDir, RngitQdn.BUNDLE_FILE));
             if (!result.ok) throw new IOException("Could not apply " + bundleId + ": " + result.message);
             Files.writeString(appliedFile, bundleId + "\n", StandardCharsets.UTF_8,
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);

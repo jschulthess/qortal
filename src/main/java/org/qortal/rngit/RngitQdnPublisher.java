@@ -214,7 +214,7 @@ final class RngitQdnPublisher {
         return head.startsWith("ref: ") ? head.substring(5).strip() : null;
     }
 
-    private static long nextBundleNumber(RngitQdn.Descriptor descriptor) {
+    static long nextBundleNumber(RngitQdn.Descriptor descriptor) {
         long max = 0;
         for (String id : descriptor.bundles) {
             try {
@@ -226,7 +226,7 @@ final class RngitQdnPublisher {
         return max + 1;
     }
 
-    private static RngitQdn.Descriptor copy(RngitQdn.Descriptor d) {
+    static RngitQdn.Descriptor copy(RngitQdn.Descriptor d) {
         RngitQdn.Descriptor c = new RngitQdn.Descriptor();
         c.format = d.format;
         c.repository = d.repository;

@@ -120,7 +120,10 @@ class RngitQdnPublisherTests {
             RngitRepositories.Repository seen = other.getRepository(NAME, "repo");
             assertNotNull(seen);
             assertEquals(first.name(), RngitGit.resolveRef(seen.getPath(), "refs/heads/master"));
-            assertFalse(other.resolvePermission(CREATOR, NAME, "repo", Permission.WRITE), "read-only without the key");
+            // Without the key the descriptor's rules still apply, but a permitted write is staged, not published
+            assertTrue(other.resolvePermission(CREATOR, NAME, "repo", Permission.WRITE));
+            assertFalse(other.resolvePermission(STRANGER, NAME, "repo", Permission.WRITE));
+            assertFalse(other.getQdnGateway().isWritableHere(NAME), "cannot publish without the key");
 
             // Second push: a thin bundle on top of what QDN already holds
             RevCommit second = commit(git, "two");

@@ -79,10 +79,10 @@ final class RNSConfigWriter {
         String fqdn = InetAddress.getLocalHost().getCanonicalHostName();
 
         // A node must not list itself as a gateway to dial.
-        List<String> tcpGatewayServers =
-                Arrays.stream(Settings.getInstance().getReticulumTcpGatewayServers()).collect(Collectors.toList());
-        List<String> backboneGatewayServers =
-                Arrays.stream(Settings.getInstance().getReticulumBackboneGatewayServers()).collect(Collectors.toList());
+        // An empty list in settings.json unmarshals to null: no gateways, not a render failure,
+        // whose packaged fallback config would dial public gateways
+        List<String> tcpGatewayServers = gatewayList(Settings.getInstance().getReticulumTcpGatewayServers());
+        List<String> backboneGatewayServers = gatewayList(Settings.getInstance().getReticulumBackboneGatewayServers());
         tcpGatewayServers.remove(fqdn);
         backboneGatewayServers.remove(fqdn);
 
@@ -133,6 +133,10 @@ final class RNSConfigWriter {
         // content. (The fallback path below already uses Files.copy REPLACE_EXISTING.)
         Files.deleteIfExists(configFile);
         Files.write(configFile, renderedConfig.getBytes(), CREATE, WRITE);
+    }
+
+    private static List<String> gatewayList(String[] servers) {
+        return servers == null ? new java.util.ArrayList<>() : Arrays.stream(servers).collect(Collectors.toList());
     }
 
     private static void copyPackagedDefault(Path configFile) throws IOException {

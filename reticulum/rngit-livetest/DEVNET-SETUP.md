@@ -27,7 +27,12 @@ that adds `make-devnet.sh`):
 
 ```bash
 cd ~/git/qortal-claude/tools/rngit-livetest
+# using defaults
 ./make-devnet.sh --out ~/devnet --hosts devnet-1.example,devnet-2.example,devnet-3.example --start-minutes 20
+
+# other example using custom ports
+./make-devnet.sh --out ~/devnet --api-port 43291 --listen-port 43292 --data-port 43294 \
+  --hosts devnet-1.example,devnet-2.example,devnet-3.example --start-minutes 20
 ```
 
 It writes to `~/devnet`:

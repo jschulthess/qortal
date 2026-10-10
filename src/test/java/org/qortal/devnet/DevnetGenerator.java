@@ -19,7 +19,7 @@ import java.util.Map;
 /**
  * Generates an isolated devnet: a chain config derived from Core's current
  * mainnet {@code blockchain.json}, fresh keys for its genesis accounts, and one
- * settings file per node. See {@code tools/rngit-livetest/DEVNET-SETUP.md}.
+ * settings file per node. See {@code reticulum/rngit-livetest/DEVNET-SETUP.md}.
  * <p>
  * The chain follows mainnet's rules as they apply today: every feature trigger
  * mainnet has passed is active from genesis, windows mainnet has closed are
@@ -29,7 +29,7 @@ import java.util.Map;
  * group), a faucet and named accounts with QORT.
  * <p>
  * Usage: {@code DevnetGenerator --out DIR --hosts h1,h2,h3 [options]}; run
- * through {@code tools/rngit-livetest/make-devnet.sh}.
+ * through {@code reticulum/rngit-livetest/make-devnet.sh}.
  */
 public class DevnetGenerator {
 

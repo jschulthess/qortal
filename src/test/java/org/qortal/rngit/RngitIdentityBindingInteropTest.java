@@ -13,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Binding records are interchangeable with tools/rngit/rns-identity-binding.py.
+ * Binding records are interchangeable with reticulum/rngit/rns-identity-binding.py.
  * The fixtures are two throwaway RNS identity files and the record that script
  * created from them for address {@value #ADDRESS}. Ed25519 signatures are
  * deterministic, so Java must reproduce the record exactly and accept it.

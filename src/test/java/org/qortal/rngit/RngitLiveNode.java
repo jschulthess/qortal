@@ -8,7 +8,7 @@ import static org.apache.commons.codec.binary.Hex.encodeHexString;
 
 /**
  * Runs an {@link RngitServer} on its own Reticulum instance, without the rest
- * of Core, for {@code tools/rngit-livetest/run.sh} to drive with the stock
+ * of Core, for {@code reticulum/rngit-livetest/run.sh} to drive with the stock
  * {@code rngit} and {@code git-remote-rns} from Python RNS.
  * <p>
  * Usage: {@code RngitLiveNode <reticulum-config-dir> <rngit-config-dir>}

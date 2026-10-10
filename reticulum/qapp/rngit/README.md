@@ -68,7 +68,7 @@ cd ~/git/qortal-claude
 mvn -o -q test-compile -DskipJUnitTests=true
 mvn -o -q dependency:build-classpath -Dmdep.includeScope=test -Dmdep.outputFile=/tmp/cp.txt
 java -cp "$(cat /tmp/cp.txt):target/classes:target/test-classes" \
-     org.qortal.api.resource.GitApiDevServer qapp/rngit 42530 --qdn-demo --hub-shim
+     org.qortal.api.resource.GitApiDevServer reticulum/qapp/rngit 42530 --qdn-demo --hub-shim
 # open http://127.0.0.1:42530/#/r/demo/hello
 ```
 

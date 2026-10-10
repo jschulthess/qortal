@@ -24,7 +24,7 @@ import java.util.Set;
 import static org.mockito.Mockito.mock;
 
 /**
- * A development server for the rngit Q-App (qapp/rngit): serves the app and
+ * A development server for the rngit Q-App (reticulum/qapp/rngit): serves the app and
  * answers /git/* through the real {@link GitResource}, over a sample
  * repository it creates in a configured group, so the app sees exactly the
  * JSON Core produces. Not part of Core; no Qortal repository or RNS needed.

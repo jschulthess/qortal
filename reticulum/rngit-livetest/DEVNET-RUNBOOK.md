@@ -117,7 +117,7 @@ Below this hash is `MY_RNS`.
 On the laptop, bind your RNS identity to U:
 
 ```bash
-cd ~/git/qortal-claude/tools/rngit
+cd ~/git/qortal-claude/reticulum/rngit
 ./rns-identity-binding.py create --address <U's address> -i $RNGIT_CONFIG/client_identity > ~/rngit-devnet/binding.json
 ./rns-identity-binding.py verify --address <U's address> ~/rngit-devnet/binding.json
 ```
@@ -421,7 +421,7 @@ dialog starts with the current address, so clear it with Ctrl-L before typing
 links to the page node of the rngit node with the given destination:
 
 ```bash
-cd ~/git/qortal-claude/tools/rngit-livetest
+cd ~/git/qortal-claude/reticulum/rngit-livetest
 cat > ~/rngit-devnet/pages.json <<'EOF'
 [{"path": "/page/group.mu", "data": {"var_g": "devgit"}},
  {"path": "/page/repo.mu", "data": {"var_g": "devgit", "var_r": "hello"}},

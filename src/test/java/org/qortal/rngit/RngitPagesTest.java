@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * What the page node does beyond the reference, which the A/B test
- * ({@code tools/rngit-livetest/pages-ab.sh}) cannot compare: blocking the null
+ * ({@code reticulum/rngit-livetest/pages-ab.sh}) cannot compare: blocking the null
  * identity, the Qortal name field, refused release tags, templates, icons, and
  * the reference's formatting helpers.
  */

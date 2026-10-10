@@ -14,7 +14,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Answers the A/B requests of {@code tools/rngit-livetest/pages-ab.sh} with
+ * Answers the A/B requests of {@code reticulum/rngit-livetest/pages-ab.sh} with
  * {@link RngitPages}, writing each response as the reference side does: the
  * page bytes, {@code FILE <name>} and the contents for a file, or {@code NONE}.
  * <p>

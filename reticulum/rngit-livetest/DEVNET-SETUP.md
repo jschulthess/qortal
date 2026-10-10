@@ -26,7 +26,7 @@ On any machine with a Core checkout (`reticulum-git` at or after the commit
 that adds `make-devnet.sh`):
 
 ```bash
-cd ~/git/qortal-claude/tools/rngit-livetest
+cd ~/git/qortal-claude/reticulum/rngit-livetest
 # using defaults
 ./make-devnet.sh --out ~/devnet --hosts devnet-1.example,devnet-2.example,devnet-3.example --start-minutes 20
 
@@ -133,22 +133,59 @@ devnet's `reticulumNetworkName` and `reticulumPassphrase` from the settings file
 
 ## 6. Hub and Q-Apps
 
-- **Connect Hub to the devnet:** add a custom node in Hub with
-  `http://<node>:<apiPort>` and that node's API key, then import a devnet
-  account. Use one funded from `faucet`, never a mainnet key.
-- **The rngit reference Q-App:** publish `qapp/rngit` as an `APP` resource
-  under a devnet name you own (Hub's publish screen with the directory zipped,
-  or `POST /arbitrary/APP/<name>/zip`, signed and processed as in step 4).
-  Then open it in Hub.
+A stock Qortal Hub works with the devnet; no custom build is needed.
+
+**Connect Hub to a node.** Core's API answers only localhost by default
+(`apiWhitelist` is `127.0.0.1` and `::1`), so forward a node's API port over
+SSH, to the port Hub's *Local node* uses:
+
+```bash
+ssh -N -L 12391:localhost:63391 devnet-1.example
+```
+
+In Hub, choose *Local node* (`http://127.0.0.1:12391`). Use *Import API key*
+with a copy of that node's API key file, `apikey.txt` in the node directory.
+The key was generated in step 3.
+
+The alternative is a custom node `http://<node>:<apiPort>` with the API key.
+But then the node's `apiWhitelist` must include the developer's address, and
+the API travels unencrypted.
+
+**Log in with a devnet account.** Hub imports an encrypted wallet file, the
+same JSON its *Download account* saves. `hub-wallet.py` writes one for any
+account in `devnet-keys.json`:
+
+```bash
+cd ~/git/qortal-claude/reticulum/rngit-livetest
+./hub-wallet.py create --keys ~/devnet/devnet-keys.json --account devuser -o devuser.json
+```
+
+It prompts for the wallet password, or takes it from `HUB_WALLET_PASSWORD`.
+In Hub, import `devuser.json` and log in with that password. The file is a
+version 1 wallet: Hub uses its decrypted seed directly as the account's
+private key, so it opens exactly the account in `devnet-keys.json`.
+`./hub-wallet.py decrypt devuser.json` prints a wallet file's address and
+keys, including wallets Hub created (version 2).
+
+Use devnet accounts only. A wallet file holds the private key, protected only
+by its password.
+
+**Q-Apps.**
+- **The rngit reference Q-App:** publish `reticulum/qapp/rngit` as an `APP`
+  resource under a devnet name you own, then open it in Hub. Use Hub's
+  publish screen with the directory zipped, or `POST /arbitrary/APP/<name>/zip`,
+  signed and processed as in step 4.
 - **A developer's own Q-App:** Hub's dev mode loads a Q-App from a local dev
   server (domain and port) or from a selected directory, against the
   connected devnet node.
 
-Not yet tried: some Hub features use fixed public endpoints rather than the
-selected node. The Hub checkout of October 2025 hardcodes
-`ext-node.qortal.link` for group functions and `appnode.qortal.org` for
-trading. Check which features follow the custom node before relying on them,
-and treat the rest as unavailable on the devnet.
+**What does not follow the selected node.** Everything else in Hub uses the
+selected node: `getBaseApi`/`createEndpoint` fall back to
+`ext-node.qortal.link` only when no node is set. Two exceptions, in the Hub
+checkout of October 2025:
+- Cross-chain trading always asks `appnode.qortal.org`, a mainnet node.
+  Don't trade on the devnet.
+- The tutorials check `ext-node.qortal.link/admin/status`. This is harmless.
 
 ## 7. Reset
 
@@ -188,5 +225,10 @@ On one machine, 2026-10-03 (`--port-step 10`), with this page's Core fixes:
 - Two nodes minted alternately and stayed on the same tip.
 - A name registered through the API with the generated publisher key.
 
-Not yet verified: three separate machines, Hub against the devnet, and the
-rngit runbook on it.
+2026-10-10: `hub-wallet.py create` turns a generated key into a wallet file
+that decrypts to the same account with Hub's own libraries and derivation
+(bcryptjs, asmcrypto, Hub's `nacl-fast`), and Hub's MAC check rejects a wrong
+password.
+
+Not yet verified: three separate machines, logging in to a running Hub against
+the devnet, and the rngit runbook on it.

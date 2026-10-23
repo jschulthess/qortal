@@ -59,11 +59,17 @@ Genesis contains:
   repeated.
 
 The genesis timestamp is `--start-minutes` from now, rounded to the minute.
-Choose enough time to deploy all nodes and add their minting keys. Core mints
-only on a recent tip: at height 1, at most 90 seconds after genesis. If the
-nodes miss that window, the generated `"recoveryModeTimeout": 60000` lets them
-enter recovery mode a minute after they peer and mint on top of the old genesis
-(Core's default timeout means never).
+Choose enough time to deploy all nodes and add their minting keys: **all nodes
+must be running, peered and holding their minting key before genesis.** Core
+mints only on a recent tip (at height 1, at most 90 seconds after genesis), and
+the synchronizer never syncs from a peer whose tip isn't recent. A devnet that
+misses the window stays at height 1 for good. Recovery mode
+(`recoveryModeTimeout`) does not rescue it: it relaxes minting, not syncing, and
+a node never mints right after its own key's block, so with one key per node
+each node mints at most one block on its own fork. To restart, stop all nodes,
+set a new `genesisInfo.timestamp` in `devchain.json` (same file on every node;
+accounts and keys stay valid), move `db-devnet` away on every node and start
+them all before the new time.
 
 `--hosts` takes hostnames or IPs. The generator resolves each host to IPv4 for
 `fixedNetwork`, so run it where the hosts resolve as the nodes see each other.
@@ -113,13 +119,18 @@ about one a minute, on every node, and `GET /blocks/last` shows the same
 signature on all of them. With all minters online, `minterAddress` alternates
 between them.
 
-If the height stays at 1, look at `GET /admin/status` (needs the API key):
+If the height stays at 1 or 2, look at `GET /admin/status` (needs the API key):
 - `numberOfConnections` 0: the nodes don't peer. Check that `fixedNetwork`
   holds IPs, not hostnames, and that the firewall passes the listen port.
-- Connections but `isMintingPossible` false: genesis is more than 90 seconds
-  old and the node is not in recovery mode. Check for `recoveryModeTimeout` in
-  `settings.json` and `Entering recovery mode` in `qortal.log`.
+- Connections but `isMintingPossible` false at height 1: genesis passed before
+  the nodes were up and minting. Restart with a new genesis time (see
+  section 1).
 - `GET /admin/mintingaccounts` empty: the minting key was not added.
+- `GET /admin/mintingaccounts` lists more than one key: each node must hold
+  only its own minter's key. A node never mints right after a block signed by
+  one of its own keys, so with every key on every node the chain stops after one
+  block. Remove the others with `DELETE /admin/mintingaccounts` and the key
+  (the public key from the listing works).
 
 Don't set `singleNodeTestnet` on a devnet node: it lets a node mint with no
 peers (with `minBlockchainPeers` 0) on a chain of its own.
@@ -234,6 +245,13 @@ setting and restart it. The others catch up, or use
   Reticulum's local instance; when one stops, another loses its link and
   exits. A local test with `--port-step` ran two nodes reliably, the third
   exited this way.
+- **A node stopped during its first start can leave a half-migrated database.**
+  The next start fails with `Unable to start repository` … `object name already
+  exists in statement [ALTER TABLE ATs ADD sleep_until_message_timestamp …]`,
+  and the JVM keeps running without an API. Stop it, move `db-devnet` away and
+  start again. The fresh database imports the minting keys from
+  `qortal-backup/MintingAccounts.json`, so check `/admin/mintingaccounts`
+  afterwards.
 - **`testnet/testchain.json` is out of date.** It predates `mintingGroupIds`
   and three feature triggers; generate the chain with `make-devnet.sh` instead.
 

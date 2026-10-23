@@ -283,9 +283,6 @@ public class DevnetGenerator {
         s.put("fixedNetwork", fixed);
         s.put("minBlockchainPeers", 1);
         s.put("singleNodeTestnet", false);
-        // Minting needs a tip at most 90s old at height 1. If the nodes miss that window after
-        // genesis, recovery mode (default: never) lets them mint on the stale tip after a minute
-        s.put("recoveryModeTimeout", 60_000);
         s.put("uPnPEnabled", false);
         for (String net : List.of("bitcoinNet", "litecoinNet", "dogecoinNet", "digibyteNet", "ravencoinNet")) s.put(net, "TEST3");
         s.put("apiDocumentationEnabled", true);

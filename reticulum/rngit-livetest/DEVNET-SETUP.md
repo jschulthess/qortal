@@ -15,7 +15,7 @@ how to deploy it.
 | `"isTestNet": true` | Testnet message magic, so mainnet peers drop the handshake; Reticulum app name `qortaltest` |
 | Its own genesis (`devchain.json`) | A chain nobody else has: other networks cannot sync it, nor it theirs |
 | Its own ports (default 6339x) | Distinct from the shared test network on 6239x |
-| `fixedNetwork` | Each node talks only to the other devnet nodes |
+| `fixedNetwork` | Each node talks only to the other devnet nodes. The generator writes their IPv4 addresses: Core compares an inbound peer's IP with this list as text, so a hostname here rejects every inbound connection |
 | `"bootstrap": false` | Never downloads a public bootstrap |
 | Reticulum `network_name` and a random `passphrase` | Interface access codes: other meshes cannot join; node 1 is the only gateway, never the public ones |
 | Firewall | Peer ports open only between the devnet nodes; the API only to developers |
@@ -59,7 +59,15 @@ Genesis contains:
   repeated.
 
 The genesis timestamp is `--start-minutes` from now, rounded to the minute.
-Choose enough time to deploy all nodes; a node minted late only syncs from genesis.
+Choose enough time to deploy all nodes and add their minting keys. Core mints
+only on a recent tip: at height 1, at most 90 seconds after genesis. If the
+nodes miss that window, the generated `"recoveryModeTimeout": 60000` lets them
+enter recovery mode a minute after they peer and mint on top of the old genesis
+(Core's default timeout means never).
+
+`--hosts` takes hostnames or IPs. The generator resolves each host to IPv4 for
+`fixedNetwork`, so run it where the hosts resolve as the nodes see each other.
+The Reticulum gateway address keeps the hostname.
 
 Other options: `--api-port`, `--listen-port`, `--data-port` (defaults 63391,
 63392, 63394), `--reticulum-port` (node 1's gateway, default 4240), `--network-name`,
@@ -104,6 +112,17 @@ The minting key is `minterN.mintingKey` in `devnet-keys.json`, not its
 about one a minute, on every node, and `GET /blocks/last` shows the same
 signature on all of them. With all minters online, `minterAddress` alternates
 between them.
+
+If the height stays at 1, look at `GET /admin/status` (needs the API key):
+- `numberOfConnections` 0: the nodes don't peer. Check that `fixedNetwork`
+  holds IPs, not hostnames, and that the firewall passes the listen port.
+- Connections but `isMintingPossible` false: genesis is more than 90 seconds
+  old and the node is not in recovery mode. Check for `recoveryModeTimeout` in
+  `settings.json` and `Entering recovery mode` in `qortal.log`.
+- `GET /admin/mintingaccounts` empty: the minting key was not added.
+
+Don't set `singleNodeTestnet` on a devnet node: it lets a node mint with no
+peers (with `minBlockchainPeers` 0) on a chain of its own.
 
 ## 4. Accounts and names
 

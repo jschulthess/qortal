@@ -7,6 +7,9 @@ import org.qortal.crypto.Crypto;
 import org.qortal.utils.Base58;
 
 import java.io.InputStream;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
@@ -262,9 +265,11 @@ public class DevnetGenerator {
 
     static Map<String, Object> settings(Options o, int index) {
         int step = o.portStep * index;
+        // Core matches an inbound peer's IP against fixedNetwork as plain text, so a hostname
+        // there rejects every inbound connection and the nodes never peer
         List<String> fixed = new ArrayList<>();
         for (int i = 0; i < o.hosts.size(); i++) {
-            if (i != index) fixed.add(o.hosts.get(i) + ":" + (o.listenPort + o.portStep * i));
+            if (i != index) fixed.add(ipv4(o.hosts.get(i)) + ":" + (o.listenPort + o.portStep * i));
         }
 
         Map<String, Object> s = new LinkedHashMap<>();
@@ -278,6 +283,9 @@ public class DevnetGenerator {
         s.put("fixedNetwork", fixed);
         s.put("minBlockchainPeers", 1);
         s.put("singleNodeTestnet", false);
+        // Minting needs a tip at most 90s old at height 1. If the nodes miss that window after
+        // genesis, recovery mode (default: never) lets them mint on the stale tip after a minute
+        s.put("recoveryModeTimeout", 60_000);
         s.put("uPnPEnabled", false);
         for (String net : List.of("bitcoinNet", "litecoinNet", "dogecoinNet", "digibyteNet", "ravencoinNet")) s.put(net, "TEST3");
         s.put("apiDocumentationEnabled", true);
@@ -289,5 +297,17 @@ public class DevnetGenerator {
         s.put("reticulumTcpGatewayServers", List.of());
         s.put("rngitEnabled", true);
         return s;
+    }
+
+    /** The host's IPv4 address, as the text Core sees for an inbound peer. */
+    static String ipv4(String host) {
+        try {
+            for (InetAddress address : InetAddress.getAllByName(host)) {
+                if (address instanceof Inet4Address) return address.getHostAddress();
+            }
+        } catch (UnknownHostException e) {
+            throw new IllegalArgumentException("Can't resolve host " + host + "; pass its IP address in --hosts", e);
+        }
+        throw new IllegalArgumentException("Host " + host + " has no IPv4 address; pass one in --hosts");
     }
 }

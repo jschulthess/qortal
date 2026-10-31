@@ -99,18 +99,35 @@ rnstatus --config $RNS_CONFIG     # the interface should show as Up
 rnpath --config $RNS_CONFIG DEST_A
 ```
 
-**Check:** `rnpath` finds a path to `DEST_A` (and to `DEST_B`). If it times
-out, the interface access code (network name/passphrase) or the port is
-wrong; see *Troubleshooting*.
+**Check:** `rnpath` finds a path to `DEST_A`, `DEST_B` and `DEST_C`. If it
+times out for all of them, the interface access code (network name/passphrase)
+or the port is wrong; see *Troubleshooting*.
 
-Your rngit client identity is created on first use; to know its hash now:
+`DEST_A` is on the gateway itself, which answers for it. `DEST_B` and `DEST_C`
+are answered by the gateway from its path table, which needs a Reticulum
+library with the path-request fix (Java library `eb31baa`, Core pom at or after it).
+With an older jar on the gateway, only `DEST_A` resolves; as a workaround, set
+`announce_interval = 1` under `[rngit]` in `~/qortal/rngit/config` on B and C
+and restart them while the laptop is connected: the laptop then learns their
+paths from their announces, which the gateway forwards.
+
+### Your rngit client identity
+
+`rngit` and `git-remote-rns` create `$RNGIT_CONFIG/client_identity` on their
+first operation, but step 3 needs it before that. Create it now, in the shell
+where `RNGIT_CONFIG` is exported (the command creates it if missing and prints
+its hash either way):
 
 ```bash
 python3 -c "import RNS,os; p=os.path.expanduser('$RNGIT_CONFIG/client_identity'); \
 i=RNS.Identity.from_file(p) if os.path.exists(p) else RNS.Identity(); i.to_file(p); print(i.hash.hex())"
+ls -l $RNGIT_CONFIG/client_identity
 ```
 
-Below this hash is `MY_RNS`.
+Below this hash is `MY_RNS`. Keep `RNS_CONFIG` and `RNGIT_CONFIG` exported in
+every shell you use for the following steps: with `RNGIT_CONFIG` unset, step
+3's `-i $RNGIT_CONFIG/client_identity` reads `/client_identity`, and the git
+commands use `~/.rngit` with a different identity.
 
 ## 3. Publish your binding (developer account U)
 
@@ -467,6 +484,8 @@ afterwards.
 | Symptom | Likely cause |
 |---|---|
 | `rnpath` / `Requesting path...` times out | Laptop interface: wrong `target_port`, or `network_name`/`passphrase` differ from the gateway (interface access codes must match). |
+| `rnpath` finds `DEST_A` but times out for `DEST_B`/`DEST_C` | The gateway's Reticulum library predates the path-request fix and never answers for destinations on other nodes; see the workaround in step 2. |
+| `rns-identity-binding.py create` cannot load `client_identity` | Step 2's identity command was not run, or `RNGIT_CONFIG` is not exported in this shell. |
 | `rngit QDN gateway disabled` in log | Core's repository was not available when rngit started; check the log above it. |
 | No `QDN publishing enabled` line on A | `publisher_key` missing, unreadable, or not a Base58 32-byte key (see the error logged). |
 | `create` says *Not allowed* | The binding does not resolve: check step 3's resource exists, was published by **U** (the owner of `devuser`), and lists `MY_RNS`; bindings are cached for 5 minutes, so restart A or wait. As a fallback, `devgit = c:MY_RNS` in `[access]` tests everything else. |

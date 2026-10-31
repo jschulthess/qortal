@@ -82,7 +82,8 @@ final class RNSAnnounceHandler implements AnnounceHandler {
         log.debug("Received an announce from {}", encodeHexString(destinationHash));
 
         // Since getAspectFilter() returns null (match-all), we must verify manually.
-        // Recompute the expected hash for "qortal.core" + the announced identity and
+        // Recompute the expected hash for the aspect ("qortal.core", or "qortaltest.core"
+        // on testnet) + the announced identity and
         // compare; skip announces that belong to other apps/aspects.
         var expectedHash = hashFromNameAndIdentity(this.aspectFilter, announcedIdentity);
         if (!Arrays.equals(destinationHash, expectedHash)) {

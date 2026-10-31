@@ -44,7 +44,9 @@ public class RNS {
 
     private Reticulum reticulum;
     static final String APP_NAME = Settings.getInstance().isTestNet() ? RNSCommon.TESTNET_APP_NAME: RNSCommon.MAINNET_APP_NAME;
-    static final Integer TARGET_PORT = Settings.getInstance().isTestNet() ? RNSCommon.TESTNET_IF_TCP_PORT: RNSCommon.MAINNET_IF_TCP_PORT;
+    static final Integer TARGET_PORT = Settings.getInstance().getReticulumPort() > 0
+            ? Settings.getInstance().getReticulumPort()
+            : Settings.getInstance().isTestNet() ? RNSCommon.TESTNET_IF_TCP_PORT: RNSCommon.MAINNET_IF_TCP_PORT;
     static final String defaultConfigPath = Settings.getInstance().isTestNet() ? RNSCommon.defaultRNSConfigPathTestnet: RNSCommon.defaultRNSConfigPath;
     // Full names of baseDestination/dataDestination, so they follow APP_NAME: hard-coded
     // "qortal.*" names never matched a testnet node's "qortaltest.*" announces.

@@ -76,7 +76,8 @@ them all before the new time.
 The Reticulum gateway address keeps the hostname.
 
 Other options: `--api-port`, `--listen-port`, `--data-port` (defaults 63391,
-63392, 63394), `--reticulum-port` (node 1's gateway, default 4240), `--network-name`,
+63392, 63394), `--reticulum-port` (node 1's gateway, default 4240; written as `reticulumPort`,
+which needs a jar with that setting, else node 1 listens on 4242), `--network-name`,
 `--passphrase`, and `--port-step N` to give each node ports N higher, for
 several nodes on one machine. See *Known issues* before doing that.
 

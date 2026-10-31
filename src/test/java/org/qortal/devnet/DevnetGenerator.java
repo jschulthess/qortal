@@ -290,6 +290,7 @@ public class DevnetGenerator {
         s.put("reticulumPassphrase", o.passphrase);
         // Node 1 is the mesh's gateway; the others connect to it, never to the public gateways
         s.put("reticulumHasServerInterface", index == 0);
+        s.put("reticulumPort", o.reticulumPort);
         s.put("reticulumBackboneGatewayServers", index == 0 ? List.of() : List.of(o.hosts.get(0) + ":" + o.reticulumPort));
         s.put("reticulumTcpGatewayServers", List.of());
         s.put("rngitEnabled", true);

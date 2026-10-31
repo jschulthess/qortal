@@ -94,7 +94,8 @@ final class RNSConfigWriter {
         // * qortal_network_name: either "qortal" or "qortaltest" (from isTestnet)
         // * is_reticulum_gateway: one of the instances (Qortal core or RNS) has
         //                         at least one Gateway interface
-        // * target_port: target port for TCPServerInterface or BackboneServerInterface (only)
+        // * target_port: listen_port of the server interface, and the port for gateway
+        //                servers listed without one (reticulumPort, else 4242 / testnet 4240)
         // * use_python_rns: use local shared python rnsd (has to provide a gateway interface)
         // * python_rns_if_port: rnsd TCPServerInterface port (if rnsd gateway is a TCPServerInterface)
         String tcpGateways = StringUtils.join(tcpGatewayServers, " ");

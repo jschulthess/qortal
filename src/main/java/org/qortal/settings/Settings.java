@@ -724,6 +724,13 @@ public class Settings {
 	private boolean reticulumUsePythonRNS = false;
 	/** Specify the port if reticulumUsePythonRNS=true and rnsd has a TCPServerInterface */
 	private int reticulumPythonRNSGatewayPort = 4242;
+	/**
+	 * Reticulum gateway port: listen_port of this node's server interface
+	 * (reticulumHasServerInterface), the port advertised with reticulumAnnounceGateway,
+	 * and the port dialled for gateway entries given without one.
+	 * 0 (default) = 4242, or 4240 on testnet.
+	 */
+	private int reticulumPort = 0;
 	/** Shared IFAC passphrase for backbone interface isolation. Empty string = no passphrase. */
 	private String reticulumPassphrase = "";
 	/** Override network_name in generated config. Empty string = use APP_NAME (qortal/qortaltest). */
@@ -1652,6 +1659,8 @@ public class Settings {
 	public boolean getReticulumUsePythonRNS() { return this.reticulumUsePythonRNS; }
 
 	public int getReticulumPythonRNSGatewayPort() { return this.reticulumPythonRNSGatewayPort; }
+
+	public int getReticulumPort() { return this.reticulumPort; }
 
 	public String getReticulumPassphrase() { return this.reticulumPassphrase; }
 

@@ -44,8 +44,13 @@ public class RNS {
     static final String APP_NAME = Settings.getInstance().isTestNet() ? RNSCommon.TESTNET_APP_NAME: RNSCommon.MAINNET_APP_NAME;
     static final Integer TARGET_PORT = Settings.getInstance().isTestNet() ? RNSCommon.TESTNET_IF_TCP_PORT: RNSCommon.MAINNET_IF_TCP_PORT;
     static final String defaultConfigPath = Settings.getInstance().isTestNet() ? RNSCommon.defaultRNSConfigPathTestnet: RNSCommon.defaultRNSConfigPath;
-    static final String CORE_ASPECT = "qortal.core";
-    static final String QDN_ASPECT  = "qortal.qdn";
+    // Full names of baseDestination/dataDestination, so they follow APP_NAME: hard-coded
+    // "qortal.*" names never matched a testnet node's "qortaltest.*" announces.
+    static final String CORE_ASPECT = APP_NAME + ".core";
+    static final String QDN_ASPECT  = APP_NAME + ".qdn";
+    static {
+        RNSPeerRegistry.setAppName(APP_NAME);
+    }
     private final int MIN_DESIRED_CORE_PEERS = Settings.getInstance().getReticulumMinDesiredCorePeers();
     private final int MIN_DESIRED_DATA_PEERS = Settings.getInstance().getReticulumMinDesiredDataPeers();
 

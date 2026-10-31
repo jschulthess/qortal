@@ -107,6 +107,7 @@ final class RNSAnnounceHandler implements AnnounceHandler {
             // resolve it once they identify.
             if (announcedVersion != null) {
                 versions.put(announcedIdentity, announcedVersion);
+                updatePeerVersions(destinationHash, announcedIdentity, announcedVersion);
             }
         }
 
@@ -170,6 +171,28 @@ final class RNSAnnounceHandler implements AnnounceHandler {
                 addLinkedPeer.accept(newPeer);
                 log.info("added new {} ReticulumPeer, destinationHash: {}, version: {}",
                         newPeer.getPeerAspect(), encodeHexString(destinationHash), announcedVersion);
+            }
+        }
+    }
+
+    /**
+     * Bring the version of the peers we already have with this remote up to date. Peers created
+     * without an announce have none (cached-identity reconnects, and inbound peers that identified
+     * before the remote's first announce arrived), and a remote that upgraded announces a new one.
+     * Runs for every announce, also once enough peers are connected.
+     */
+    void updatePeerVersions(byte[] destinationHash, Identity identity, String version) {
+        for (ReticulumPeer p : registry.linked()) {
+            if (Arrays.equals(p.getDestinationHash(), destinationHash)) {
+                p.setPeersVersionString(version);
+            }
+        }
+        if (identity == null) return;
+        for (ReticulumPeer p : registry.incoming()) {
+            Identity remote = p.getServerIdentity();
+            if (p.getPeerAspect() == this.aspect && remote != null
+                    && Arrays.equals(remote.getHash(), identity.getHash())) {
+                p.setPeersVersionString(version);
             }
         }
     }

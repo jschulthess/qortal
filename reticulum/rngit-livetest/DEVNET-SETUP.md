@@ -42,6 +42,7 @@ It writes to `~/devnet`:
 | `devchain.json` | The chain config, derived from Core's current mainnet `blockchain.json` |
 | `devnet-keys.json` | Every genesis account's address and keys. Private: keep it out of git, mode 600 |
 | `settings-node-1.json` … `-3.json` | One `settings.json` per node |
+| `rngit-config` | Core's default rngit config with `announce_interval = 10`, the same for every node |
 
 The chain follows mainnet's rules as they apply today:
 - Every feature trigger mainnet has passed is active from genesis.
@@ -90,6 +91,7 @@ mkdir -p ~/qortal-devnet && cd ~/qortal-devnet
 cp /path/to/qortal.jar .                # built from the same checkout
 cp ~/devnet/devchain.json .
 cp ~/devnet/settings-node-N.json settings.json
+mkdir -p rngit && cp ~/devnet/rngit-config rngit/config
 java -Djava.net.preferIPv4Stack=false -jar qortal.jar settings.json > run.out 2>&1 &
 ```
 
@@ -98,6 +100,14 @@ java -Djava.net.preferIPv4Stack=false -jar qortal.jar settings.json > run.out 2>
 `RNSConfigWriter`. That error means the node fell back to Core's packaged
 testnet Reticulum config, which dials a public host; stop the node and fix the
 settings (see *Known issues*).
+
+`rngit/config` must be in place before the first start: Core writes its own
+default there when the file is missing (with `announce_interval = 360`) and
+never overwrites an existing one. On a node that already has one, set
+`announce_interval = 10` under `[rngit]` by hand. Why 10 minutes: when node 1,
+the gateway, restarts, it forgets the paths to the other nodes' rngit
+destinations and does not search for them, so laptops cannot reach those
+nodes until they announce again; with the default that is up to 6 hours.
 
 Open the firewall between the nodes for the listen, data and Reticulum ports,
 and the API port for whoever uses Hub.

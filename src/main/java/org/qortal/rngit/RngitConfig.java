@@ -25,7 +25,7 @@ import java.util.Map;
 @Slf4j
 public final class RngitConfig {
 
-    static final String DEFAULT_CONFIG = String.join("\n",
+    public static final String DEFAULT_CONFIG = String.join("\n",
             "# This is the rngit config file for the Qortal Core git node.",
             "# It uses the same format and options as the reference rngit node.",
             "",

@@ -64,6 +64,21 @@ Note each node's `<DEST>`; below they are `DEST_A`, `DEST_B`, `DEST_C`.
 The first start also wrote `~/qortal/rngit/config`, `repositories_identity`
 and `client_identity`.
 
+In `~/qortal/rngit/config` on every node, set a short announce interval
+(minutes) and restart Core again:
+
+```ini
+[rngit]
+  announce_interval = 10
+```
+
+The default, 360, suits a large mesh but not a test with restarts: a gateway
+that restarts forgets the paths to the other nodes' rngit destinations, does
+not search for them on its client interfaces (neither does the reference), and
+relearns them only from their next announce. A devnet made with
+`make-devnet.sh` already has this if its `rngit-config` was copied in before
+the first start (`DEVNET-SETUP.md`).
+
 ## 2. Laptop: connect to the devnet mesh
 
 Find a devnet node that runs a gateway (backbone server) interface and read
@@ -484,6 +499,7 @@ afterwards.
 | Symptom | Likely cause |
 |---|---|
 | `rnpath` / `Requesting path...` times out | Laptop interface: wrong `target_port`, or `network_name`/`passphrase` differ from the gateway (interface access codes must match). |
+| `rnpath` finds the others but times out for one rngit node, after the gateway restarted | That node announced before the gateway came back, and the gateway relearns the path only from its next announce. Restart Core on that node (rngit announces about 5 s after start), and set a short `announce_interval` (step 1). |
 | `rnpath` finds `DEST_A` but times out for `DEST_B`/`DEST_C` | The gateway's Reticulum library predates the path-request fix and never answers for destinations on other nodes; see the workaround in step 2. |
 | `rns-identity-binding.py create` cannot load `client_identity` | Step 2's identity command was not run, or `RNGIT_CONFIG` is not exported in this shell. |
 | `rngit QDN gateway disabled` in log | Core's repository was not available when rngit started; check the log above it. |

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import org.qortal.account.PrivateKeyAccount;
 import org.qortal.crypto.Crypto;
+import org.qortal.rngit.RngitConfig;
 import org.qortal.utils.Base58;
 
 import java.io.InputStream;
@@ -99,11 +100,26 @@ public class DevnetGenerator {
         for (int i = 0; i < o.hosts.size(); i++) {
             JSON.writeValue(o.out.resolve("settings-node-" + (i + 1) + ".json").toFile(), settings(o, i));
         }
+        Files.writeString(o.out.resolve("rngit-config"), rngitConfig());
 
         long genesis = ((Number) ((Map<?, ?>) chain.get("genesisInfo")).get("timestamp")).longValue();
         System.out.println("Wrote " + o.out.resolve("devchain.json") + " (genesis at " + java.time.Instant.ofEpochMilli(genesis) + ")");
         System.out.println("Wrote " + keyFile + " (private keys: keep it out of git)");
         System.out.println("Wrote settings-node-1.." + o.hosts.size() + ".json");
+        System.out.println("Wrote rngit-config (copy to each node's rngit/config before its first start)");
+    }
+
+    /**
+     * Core's default rngit config, announcing every 10 minutes instead of 360. A gateway that
+     * restarts forgets the paths to the other nodes' rngit destinations and never searches for
+     * them, so it only relearns them from the next announce.
+     */
+    static String rngitConfig() {
+        String config = RngitConfig.DEFAULT_CONFIG.replace("announce_interval = 360", "announce_interval = 10");
+        if (config.equals(RngitConfig.DEFAULT_CONFIG)) {
+            throw new IllegalStateException("announce_interval = 360 not found in RngitConfig.DEFAULT_CONFIG");
+        }
+        return config;
     }
 
     static Options parse(String[] args) {

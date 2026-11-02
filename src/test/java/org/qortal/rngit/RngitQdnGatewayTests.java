@@ -132,6 +132,12 @@ class RngitQdnGatewayTests {
             assertEquals(second.name(), RngitGit.resolveRef(refreshed.getPath(), "refs/heads/master"));
             assertEquals(List.of(b1, b2), Files.readAllLines(refreshed.getPath().resolve(RngitQdnGateway.APPLIED_FILE)));
 
+            // The cache deleted while the node runs (runbook step 7): rebuilt from QDN
+            org.apache.commons.io.FileUtils.deleteDirectory(tmp.resolve("cache").toFile());
+            RngitRepositories.Repository rebuilt = repositories.getRepository(NAME, "repo");
+            assertNotNull(rebuilt);
+            assertEquals(second.name(), RngitGit.resolveRef(rebuilt.getPath(), "refs/heads/master"));
+
             assertNull(repositories.getRepository(NAME, "other"), "no such repository under the name");
         }
     }

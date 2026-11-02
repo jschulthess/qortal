@@ -144,6 +144,16 @@ final class RngitQdnGateway {
         return cached == null ? null : cached.descriptor;
     }
 
+    /**
+     * The cache reflects this descriptor and is still on disk. Deleting the cache
+     * directory while the node runs (runbook step 7) must rebuild it, not leave
+     * every request failing on a repository that is gone.
+     */
+    private static boolean isCurrent(Cached cached, byte[] signature) {
+        return cached != null && Arrays.equals(cached.descriptorSignature, signature)
+                && Files.isDirectory(cached.path);
+    }
+
     private Cached refresh(String name, String repositoryName) {
         if (group(name) == null || !RngitQdn.isValidRepositoryName(repositoryName)) return null;
 
@@ -152,11 +162,11 @@ final class RngitQdnGateway {
 
         String key = key(name, repositoryName);
         Cached cached = repositories.get(key);
-        if (cached != null && Arrays.equals(cached.descriptorSignature, signature)) return cached;
+        if (isCurrent(cached, signature)) return cached;
 
         synchronized (lock(name, repositoryName)) {
             cached = repositories.get(key);
-            if (cached != null && Arrays.equals(cached.descriptorSignature, signature)) return cached;
+            if (isCurrent(cached, signature)) return cached;
             try {
                 RngitQdn.Descriptor descriptor = materialise(name, repositoryName);
                 cached = new Cached(signature, descriptor, cachePath(name, repositoryName));

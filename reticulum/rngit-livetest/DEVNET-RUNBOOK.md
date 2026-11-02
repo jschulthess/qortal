@@ -53,7 +53,7 @@ On **A** and **B** (and **C**), add to `~/qortal/settings.json`:
 
 (`rngitConfigPath` defaults to `rngit`, i.e. `~/qortal/rngit`.) Restart Core.
 
-**Check** in `~/qortal/log.txt` on each node:
+**Check** in `~/qortal/qortal.log` on each node:
 
 ```
 rngit QDN gateway enabled: every registered name is a repository group
@@ -193,7 +193,7 @@ create repositories under `devgit`:
 
 Restart Core on A.
 
-**Check** in A's `log.txt`:
+**Check** in A's `qortal.log`:
 
 ```
 rngit QDN publishing enabled for names owned by <P's address>
@@ -205,7 +205,7 @@ rngit QDN publishing enabled for names owned by <P's address>
 rngit create --config $RNGIT_CONFIG --rnsconfig $RNS_CONFIG rns://DEST_A/devgit/hello
 ```
 
-**Check:** `Repository devgit/hello created`. In A's `log.txt`:
+**Check:** `Repository devgit/hello created`. In A's `qortal.log`:
 `Creating QDN repository devgit/hello` and `Published QDN resource devgit/hello`.
 
 This step exercises the binding: you were allowed to create because
@@ -222,7 +222,7 @@ git remote add origin rns://DEST_A/devgit/hello
 git push origin master
 ```
 
-**Check:** the push succeeds. Within a few seconds A's `log.txt` shows
+**Check:** the push succeeds. Within a few seconds A's `qortal.log` shows
 `Published devgit/hello to QDN: 1 refs, new bundle hello~b~1`. After the
 next block:
 
@@ -240,7 +240,7 @@ git clone rns://DEST_B/devgit/hello clone-b1
 ```
 
 **Check:** the clone matches (`git -C clone-b1 log --oneline` shows both
-commits; `cmp clone-b1/blob.bin hello/blob.bin`). B's `log.txt` shows
+commits; `cmp clone-b1/blob.bin hello/blob.bin`). B's `qortal.log` shows
 `Materialised QDN repository devgit/hello (1 bundles, 1 refs)`.
 
 B now holds the data in its own QDN storage. Confirm on B:
@@ -268,7 +268,7 @@ git clone rns://DEST_B/devgit/hello clone-b2
 ```
 
 **Check (exit criterion):** the clone succeeds with A offline and matches
-`hello/`. B's `log.txt` shows a new `Materialised QDN repository devgit/hello`.
+`hello/`. B's `qortal.log` shows a new `Materialised QDN repository devgit/hello`.
 
 Optional, stronger: clone through **C**, which has never seen the repository,
 so it must fetch the QDN data from B:
@@ -293,7 +293,7 @@ git push origin master        # origin is DEST_B
 
 **Check:** git reports the ref as rejected with
 `Staged as #1, awaiting the owner's approval` and exits non-zero; this is
-intended, as the repository has not changed yet. B's `log.txt` shows
+intended, as the repository has not changed yet. B's `qortal.log` shows
 `Staged change #1 to devgit/hello by MY_RNS: bundle refs/heads/master`.
 
 List it through B's API (a second tunnel, to B):
@@ -411,7 +411,7 @@ On **B**, add to `~/qortal/rngit/config`:
 
 Restart Core on B.
 
-**Check** in B's `log.txt`:
+**Check** in B's `qortal.lg`:
 
 ```
 Git Nomad Network Node listening on <PAGE_B>

@@ -57,6 +57,8 @@ public class DevnetGenerator {
         /** On one machine, each further node gets ports this much higher. */
         int portStep = 0;
         int reticulumPort = 4240;
+        /** The first this many nodes are Reticulum gateways, so the mesh survives one going offline. */
+        int gateways = 2;
         String networkName = "qortal-devnet";
         String passphrase;
         Map<String, String> accounts = new LinkedHashMap<>(Map.of());
@@ -137,6 +139,7 @@ public class DevnetGenerator {
                 case "--data-port": o.dataPort = Integer.parseInt(value); i++; break;
                 case "--port-step": o.portStep = Integer.parseInt(value); i++; break;
                 case "--reticulum-port": o.reticulumPort = Integer.parseInt(value); i++; break;
+                case "--gateways": o.gateways = Integer.parseInt(value); i++; break;
                 case "--network-name": o.networkName = value; i++; break;
                 case "--passphrase": o.passphrase = value; i++; break;
                 case "--account": {
@@ -149,6 +152,7 @@ public class DevnetGenerator {
             }
         }
         if (o.out == null) throw new IllegalArgumentException("--out is required");
+        if (o.gateways < 1) throw new IllegalArgumentException("--gateways must be at least 1");
         if (o.accounts.isEmpty()) {
             o.accounts.put("faucet", "1000000");
             o.accounts.put("publisher", "10000");
@@ -304,10 +308,17 @@ public class DevnetGenerator {
         s.put("apiDocumentationEnabled", true);
         s.put("reticulumNetworkName", o.networkName);
         s.put("reticulumPassphrase", o.passphrase);
-        // Node 1 is the mesh's gateway; the others connect to it, never to the public gateways
-        s.put("reticulumHasServerInterface", index == 0);
-        s.put("reticulumPort", o.reticulumPort);
-        s.put("reticulumBackboneGatewayServers", index == 0 ? List.of() : List.of(o.hosts.get(0) + ":" + o.reticulumPort));
+        // The first nodes are the mesh's gateways, never the public ones. A gateway connects to
+        // the gateways before it, every other node to all of them, so each node keeps a route to
+        // the rest of the mesh while one gateway is offline
+        int gateways = Math.min(o.gateways, o.hosts.size());
+        List<String> gatewayServers = new ArrayList<>();
+        for (int i = 0; i < Math.min(index, gateways); i++) {
+            gatewayServers.add(o.hosts.get(i) + ":" + (o.reticulumPort + o.portStep * i));
+        }
+        s.put("reticulumHasServerInterface", index < gateways);
+        s.put("reticulumPort", o.reticulumPort + step);
+        s.put("reticulumBackboneGatewayServers", gatewayServers);
         s.put("reticulumTcpGatewayServers", List.of());
         s.put("rngitEnabled", true);
         return s;

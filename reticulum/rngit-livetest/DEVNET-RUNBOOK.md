@@ -88,8 +88,10 @@ this if its `rngit-config` was copied in before the first start
 ### B as a second Reticulum gateway
 
 A is the gateway the other nodes and the laptop connect to. With only A, the
-laptop has no route to B or C while A is offline (steps 7, 8 and 12). Make B a
-gateway as well: in B's `~/qortal/settings.json` set
+laptop has no route to B or C while A is offline (steps 7, 8 and 12). A devnet
+made with `make-devnet.sh` already has B as a gateway and C connected to both;
+then only do the check below. Otherwise make B a gateway as well: in B's
+`~/qortal/settings.json` set
 
 ```json
 "reticulumHasServerInterface": true,

@@ -11,7 +11,8 @@
 #   --listen-port P       blockchain P2P port (default 63392)
 #   --data-port P         QDN port (default 63394)
 #   --port-step N         add N per node to the ports, for nodes on one machine
-#   --reticulum-port P    node 1's Reticulum gateway port (default 4240, testnet)
+#   --reticulum-port P    Reticulum gateway port (default 4240, testnet)
+#   --gateways N          the first N nodes are Reticulum gateways (default 2)
 #   --network-name NAME   Reticulum network name (default qortal-devnet)
 #   --passphrase TEXT     Reticulum passphrase (default: random)
 #   --account NAME:QORT   a funded genesis account (repeatable; default:

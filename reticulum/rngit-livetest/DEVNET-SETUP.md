@@ -17,7 +17,7 @@ how to deploy it.
 | Its own ports (default 6339x) | Distinct from the shared test network on 6239x |
 | `fixedNetwork` | Each node talks only to the other devnet nodes. The generator writes their IPv4 addresses: Core compares an inbound peer's IP with this list as text, so a hostname here rejects every inbound connection |
 | `"bootstrap": false` | Never downloads a public bootstrap |
-| Reticulum `network_name` and a random `passphrase` | Interface access codes: other meshes cannot join; node 1 is the gateway (the runbook adds node 2 as a second one), never the public ones |
+| Reticulum `network_name` and a random `passphrase` | Interface access codes: other meshes cannot join; nodes 1 and 2 are the gateways (`--gateways`), never the public ones; node 2 also connects to node 1, the others to both |
 | Firewall | Peer ports open only between the devnet nodes; the API only to developers |
 
 ## 1. Generate the devnet
@@ -77,8 +77,10 @@ them all before the new time.
 The Reticulum gateway address keeps the hostname.
 
 Other options: `--api-port`, `--listen-port`, `--data-port` (defaults 63391,
-63392, 63394), `--reticulum-port` (node 1's gateway, default 4240; written as `reticulumPort`,
-which needs a jar with that setting, else node 1 listens on 4242), `--network-name`,
+63392, 63394), `--reticulum-port` (the gateways' port, default 4240; written as `reticulumPort`,
+which needs a jar with that setting, else gateways listen on 4242), `--gateways N`
+(the first N nodes are Reticulum gateways, default 2; 1 gives the old single
+gateway), `--network-name`,
 `--passphrase`, and `--port-step N` to give each node ports N higher, for
 several nodes on one machine. See *Known issues* before doing that.
 
@@ -170,9 +172,9 @@ publisher as owner. Do the same for `devuser`, and pay new developers from
 Follow `DEVNET-RUNBOOK.md` from step 1, with these nodes as A, B and C. The
 generated settings already enable rngit; P is `publisher`, U is `devuser`.
 The runbook's laptop Reticulum config (step 2) uses node 1's gateway and node 2's,
-which runbook step 1 turns into a second gateway (the generator makes only node 1
-one), with this devnet's `reticulumNetworkName` and `reticulumPassphrase` from the
-settings files.
+with this devnet's `reticulumNetworkName` and `reticulumPassphrase` from the
+settings files. Both are gateways already, so runbook step 1's *B as a second
+Reticulum gateway* only needs its checks (and the firewall or NAT port forward).
 
 ## 6. Hub and Q-Apps
 

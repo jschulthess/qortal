@@ -9,6 +9,8 @@ Proves the QDN-backed rngit on real nodes:
   the name, is staged; the name's owner publishes it; every node then serves it.
 - **Nomad Network pages (step 12):** the same repository browsed as Nomad
   Network pages through **B**, with **A** offline.
+- **ssh upstream (step 13, optional):** **B** mirrors and forks a repository
+  from an ssh URL into a local group and syncs the fork.
 
 Paths are written as `~/qortal`, the node directory; on nodes made with
 `DEVNET-SETUP.md` substitute that directory (e.g. `/qortal-devnet`), also in
@@ -540,12 +542,103 @@ connects anonymously until told otherwise, per node:
 **Check:** the pages appear again. Remove the entry from `blocked_identities`
 afterwards.
 
+## 13. Optional: ssh upstream (mirror, fork, sync)
+
+Forks and mirrors live in local groups (directories under `[repositories]`);
+QDN groups refuse them. For an `ssh://` source, Core runs the `git` command as
+its own user, so B needs `git` and a passphrase-less ssh key that reaches the
+upstream host without a prompt. Here the upstream is a bare repository on A.
+
+On **A**, create the upstream with two branches:
+
+```bash
+mkdir -p ~/rngit-upstream && rm -rf /tmp/up-src && git init -q -b main /tmp/up-src && cd /tmp/up-src
+echo "ssh upstream on A" > README && git add README && git commit -qm "upstream: first commit"
+git checkout -qb side && echo side > side.txt && git add side.txt && git commit -qm "upstream: side branch"
+git checkout -q main && git clone -q --bare /tmp/up-src ~/rngit-upstream/hello.git && cd && rm -rf /tmp/up-src
+```
+
+On **B**, as the user Core runs as, check that ssh works non-interactively
+(`BatchMode`: a host-key or password prompt fails instead of hanging):
+
+```bash
+git --version
+GIT_SSH_COMMAND="ssh -o BatchMode=yes" git ls-remote --symref ssh://USER@devnet-node-1:SSH_PORT/home/USER/rngit-upstream/hello.git
+```
+
+**Check:** `ref: refs/heads/main HEAD`, then `main` and `side`. If not, add a
+key (`ssh-keygen`, `ssh-copy-id`) and accept A's host key once by hand.
+
+In B's `~/qortal/rngit/config`, add a local group that you may create
+repositories in (`MY_RNS` from step 2), and restart Core on B:
+
+```ini
+[repositories]
+  local = /home/USER/qortal/rngit/groups/local
+
+[aliases]
+  laptop = MY_RNS
+
+[access]
+  local = r:all, c:laptop
+```
+
+```bash
+mkdir -p ~/qortal/rngit/groups/local
+```
+
+On the **laptop**:
+
+```bash
+SRC=ssh://USER@devnet-node-1:SSH_PORT/home/USER/rngit-upstream/hello.git
+B=rns://DEST_B
+RG="--config $RNGIT_CONFIG --rnsconfig $RNS_CONFIG"
+rngit mirror $RG $SRC $B/local/hello-mirror      # Repository mirrored to local/hello-mirror
+rngit fork $RG $SRC $B/local/hello-fork          # Repository forked to local/hello-fork
+git clone $B/local/hello-mirror clone-mirror
+git -C clone-mirror branch -a
+```
+
+**Check:** both commands report success; the clone has the `README` and
+`origin/main` and `origin/side`, with `origin/HEAD -> origin/main`. On B,
+`git -C ~/qortal/rngit/groups/local/hello-mirror config repository.rngit.type`
+prints `mirror` (`fork` for `hello-fork`).
+
+Advance the upstream on **A**:
+
+```bash
+cd /tmp && git clone -q ~/rngit-upstream/hello.git up && cd up && echo two >> README \
+  && git commit -qam "upstream: second" && git push -q origin main && cd .. && rm -rf up
+```
+
+and sync the fork from the **laptop**:
+
+```bash
+rngit sync $RG $B/local/hello-fork               # Repository synced
+```
+
+**Check:** on B, `git -C ~/qortal/rngit/groups/local/hello-fork log --oneline -1`
+shows `upstream: second`. Mirrors also sync by themselves every
+`mirror_interval` hours (`[rngit]`, default 24); `rngit sync` on the mirror
+does it now.
+
+A failing source:
+
+```bash
+rngit mirror $RG ssh://USER@devnet-node-1:SSH_PORT/nonexistent.git $B/local/bad
+```
+
+**Check:** `Server error: Failed to fetch from source: fatal: '/nonexistent.git'
+does not appear to be a git repository ...`, and no `local/bad` on B.
+
 ## Cleanup
 
 - `rngitEnabled: false` (or remove it) in `settings.json` disables rngit.
 - Remove `[pages]` (or set `serve_nomadnet = no`) to stop serving pages.
 - `~/qortal/rngit/qdn-cache` can be deleted at any time.
 - Remove `~/qortal/rngit/publisher_key` from A when done; it is a private key.
+- Step 13: remove the `local` group, alias and access lines from B's
+  `rngit/config`, `~/qortal/rngit/groups/local` on B and `~/rngit-upstream` on A.
 
 ## Troubleshooting
 
@@ -557,6 +650,9 @@ afterwards.
 | With A offline, `rnpath` times out for `DEST_C` only | C is a client of A alone; add B to C's `reticulumBackboneGatewayServers` (step 1). |
 | `rnpath` finds `DEST_A` but times out for `DEST_B`/`DEST_C` | The gateway's Reticulum library predates the path-request fix and never answers for destinations on other nodes; see the workaround in step 2. |
 | `rns-identity-binding.py create` cannot load `client_identity` | Step 2's identity command was not run, or `RNGIT_CONFIG` is not exported in this shell. |
+| `rngit mirror`/`fork` with an `ssh://` source fails with `Host key verification failed` or `Permission denied` | Core's user on B has no key for the upstream, or the host is not in its `known_hosts`; run step 13's `ls-remote` check on B as that user. `ssh sources need the git command` means `git` is not installed on B. |
+| `rngit mirror`/`fork` answers `Not supported for QDN repositories yet` | The target group is a Qortal name; forks and mirrors need a local `[repositories]` group (step 13). |
+| `rngit mirror`/`fork` answers `Not found` or `Not allowed` | The local group's directory is missing, or `[access]` gives your identity no `c` there. |
 | `rngit QDN gateway disabled` in log | Core's repository was not available when rngit started; check the log above it. |
 | No `QDN publishing enabled` line on A | `publisher_key` missing, unreadable, or not a Base58 32-byte key (see the error logged). |
 | `create` says *Not allowed* | The binding does not resolve: check step 3's resource exists, was published by **U** (the owner of `devuser`), and lists `MY_RNS`; bindings are cached for 5 minutes, so restart A or wait. As a fallback, `devgit = c:MY_RNS` in `[access]` tests everything else. |

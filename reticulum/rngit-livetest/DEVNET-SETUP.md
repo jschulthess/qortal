@@ -17,7 +17,7 @@ how to deploy it.
 | Its own ports (default 6339x) | Distinct from the shared test network on 6239x |
 | `fixedNetwork` | Each node talks only to the other devnet nodes. The generator writes their IPv4 addresses: Core compares an inbound peer's IP with this list as text, so a hostname here rejects every inbound connection |
 | `"bootstrap": false` | Never downloads a public bootstrap |
-| Reticulum `network_name` and a random `passphrase` | Interface access codes: other meshes cannot join; node 1 is the only gateway, never the public ones |
+| Reticulum `network_name` and a random `passphrase` | Interface access codes: other meshes cannot join; node 1 is the gateway (the runbook adds node 2 as a second one), never the public ones |
 | Firewall | Peer ports open only between the devnet nodes; the API only to developers |
 
 ## 1. Generate the devnet
@@ -104,10 +104,10 @@ settings (see *Known issues*).
 `rngit/config` must be in place before the first start: Core writes its own
 default there when the file is missing (with `announce_interval = 360`) and
 never overwrites an existing one. On a node that already has one, set
-`announce_interval = 10` under `[rngit]` by hand. Why 10 minutes: when node 1,
-the gateway, restarts, it forgets the paths to the other nodes' rngit
-destinations and does not search for them, so laptops cannot reach those
-nodes until they announce again; with the default that is up to 6 hours.
+`announce_interval = 10` under `[rngit]` by hand. Why 10 minutes: a restarted
+gateway restores its paths from its saved path table and from the other
+nodes' tunnels, but a path it lost anyway (e.g. after a hard kill) comes back
+only with that node's next announce; with the default that is up to 6 hours.
 
 Open the firewall between the nodes for the listen, data and Reticulum ports,
 and the API port for whoever uses Hub.
@@ -169,8 +169,10 @@ publisher as owner. Do the same for `devuser`, and pay new developers from
 
 Follow `DEVNET-RUNBOOK.md` from step 1, with these nodes as A, B and C. The
 generated settings already enable rngit; P is `publisher`, U is `devuser`.
-The runbook's laptop Reticulum config (step 2) uses node 1's gateway, with this
-devnet's `reticulumNetworkName` and `reticulumPassphrase` from the settings files.
+The runbook's laptop Reticulum config (step 2) uses node 1's gateway and node 2's,
+which runbook step 1 turns into a second gateway (the generator makes only node 1
+one), with this devnet's `reticulumNetworkName` and `reticulumPassphrase` from the
+settings files.
 
 ## 6. Hub and Q-Apps
 

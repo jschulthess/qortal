@@ -10,6 +10,10 @@ Proves the QDN-backed rngit on real nodes:
 - **Nomad Network pages (step 12):** the same repository browsed as Nomad
   Network pages through **B**, with **A** offline.
 
+Paths are written as `~/qortal`, the node directory; on nodes made with
+`DEVNET-SETUP.md` substitute that directory (e.g. `/qortal-devnet`), also in
+the `ssh devnet-node-N cat qortal/apikey.txt` commands.
+
 Everything here is manual. Each step says what to run and what to check;
 stop at the first check that fails and see *Troubleshooting*.
 
@@ -17,8 +21,8 @@ stop at the first check that fails and see *Troubleshooting*.
 
 | Role | Where | What |
 |---|---|---|
-| **A** | `devnet-node-1` | rngit node with a `publisher_key`; publishes for the name `devgit` |
-| **B** | `devnet-node-2` | rngit node without a key: QDN gateway that stages permitted pushes |
+| **A** | `devnet-node-1` | rngit node with a `publisher_key`; publishes for the name `devgit`. Reticulum gateway (backbone server) |
+| **B** | `devnet-node-2` | rngit node without a key: QDN gateway that stages permitted pushes. Second Reticulum gateway, so the laptop reaches B while A is offline |
 | **C** (optional) | `devnet-node-3` | second read-only gateway, to show B alone serves the data |
 | **Publisher account P** | key on A | owns the name `devgit`, pays the fees |
 | **Developer account U** | your Hub/wallet | owns the name `devuser`; binds your RNS identity |
@@ -72,21 +76,48 @@ In `~/qortal/rngit/config` on every node, set a short announce interval
   announce_interval = 10
 ```
 
-The default, 360, suits a large mesh but not a test with restarts: a gateway
-that restarts forgets the paths to the other nodes' rngit destinations, does
-not search for them on its client interfaces (neither does the reference), and
-relearns them only from their next announce. A devnet made with
-`make-devnet.sh` already has this if its `rngit-config` was copied in before
-the first start (`DEVNET-SETUP.md`).
+The default, 360, suits a large mesh but not a test with restarts. A gateway
+that restarts gets its paths back from its saved path table and, for nodes
+connected to it as backbone clients, from their tunnels when they reconnect.
+It does not search for paths it lost anyway (neither does the reference), for
+example ones learned after its last save before a hard kill, and relearns them
+only from the next announce. A devnet made with `make-devnet.sh` already has
+this if its `rngit-config` was copied in before the first start
+(`DEVNET-SETUP.md`).
+
+### B as a second Reticulum gateway
+
+A is the gateway the other nodes and the laptop connect to. With only A, the
+laptop has no route to B or C while A is offline (steps 7, 8 and 12). Make B a
+gateway as well: in B's `~/qortal/settings.json` set
+
+```json
+"reticulumHasServerInterface": true,
+"reticulumPort": 4232
+```
+
+with the same port as A's `reticulumPort`, and keep A in
+`reticulumBackboneGatewayServers`, so B stays a client of A. Optionally add B to
+C's `reticulumBackboneGatewayServers` (e.g. `"devnet-node-2:4232"`), so the
+laptop also reaches C while A is offline (step 7, clone through C). Restart
+Core on B (and C). With `reticulumRegenerateConfigOnRestart` (the default),
+Core rewrites `~/qortal/.reticulum/config.yml`.
+
+**Check** on B: `qortal.log` shows `BackboneServerInterface [...] listening on
+0.0.0.0:4232`, and from the laptop `nc -vz devnet-node-2 4232` connects. If
+`nc` fails while B listens, open the port in B's firewall; if B is a VM behind
+NAT (a private address on its interface, `ip -br addr`), forward the port on
+the NAT host instead, as is done for its ssh port.
 
 ## 2. Laptop: connect to the devnet mesh
 
-Find a devnet node that runs a gateway (backbone server) interface and read
-its `~/qortal/.reticulum/config.yml`. You need, from its
+Read A's `~/qortal/.reticulum/config.yml`. You need, from its
 `BackboneServerInterface` section: `listen_port`, `network_name` and, if set,
-`passphrase`. Below: `GW_HOST`, `GW_PORT`, `NET_NAME`, `PASSPHRASE`.
+`passphrase`. Below: `GW_PORT`, `NET_NAME`, `PASSPHRASE`. B's gateway (step 1)
+uses the same values.
 
-Create `~/rngit-devnet/rns/config` on the laptop:
+Create `~/rngit-devnet/rns/config` on the laptop, with one interface per
+gateway:
 
 ```ini
 [reticulum]
@@ -97,22 +128,34 @@ Create `~/rngit-devnet/rns/config` on the laptop:
   loglevel = 4
 
 [interfaces]
-  [[devnet gateway]]
+  [[devnet gateway A]]
     type = TCPClientInterface
     interface_enabled = True
-    target_host = GW_HOST
+    target_host = devnet-node-1
     target_port = GW_PORT
     network_name = NET_NAME
     passphrase = PASSPHRASE   # omit the line if the gateway has none
+
+  [[devnet gateway B]]
+    type = TCPClientInterface
+    interface_enabled = True
+    target_host = devnet-node-2
+    target_port = GW_PORT
+    network_name = NET_NAME
+    passphrase = PASSPHRASE
 ```
 
 ```bash
 export RNS_CONFIG=~/rngit-devnet/rns
 export RNGIT_CONFIG=~/rngit-devnet/client
 mkdir -p $RNGIT_CONFIG
-rnstatus --config $RNS_CONFIG     # the interface should show as Up
+rnstatus --config $RNS_CONFIG     # both interfaces should show as Up
 rnpath --config $RNS_CONFIG DEST_A
 ```
+
+With both gateways up, Reticulum uses the shorter path (B directly is one hop,
+B through A two); when A is offline its interface goes down and everything
+runs through B.
 
 **Check:** `rnpath` finds a path to `DEST_A`, `DEST_B` and `DEST_C`. If it
 times out for all of them, the interface access code (network name/passphrase)
@@ -161,6 +204,7 @@ Publish it through any node's API, e.g. A through an SSH tunnel:
 ```bash
 ssh -N -L 12391:localhost:12391 devnet-node-1 &
 ssh devnet-node-1 cat qortal/apikey.txt > ~/rngit-devnet/apikey.txt
+test -s ~/rngit-devnet/apikey.txt || echo 'API key file is empty: check the node directory path'
 ./rns-identity-binding.py publish --name devuser --api-key-file ~/rngit-devnet/apikey.txt ~/rngit-devnet/binding.json
 # prompts for U's Base58 private key
 ```
@@ -253,8 +297,11 @@ shows it as downloaded/ready on B.
 
 ## 7. Exit test: A offline
 
-Stop Core on **A** (`./stop.sh`). On **B**, delete the rngit cache so the
-next clone rebuilds from QDN, not from the cache:
+Stop Core on **A** (`./stop.sh`). The laptop now reaches B only through B's
+gateway (step 1): `rnstatus --config $RNS_CONFIG` shows `devnet gateway A` down
+and `devnet gateway B` up, and `rnpath --config $RNS_CONFIG DEST_B` still
+resolves. On **B**, delete the rngit cache so the next clone rebuilds from QDN,
+not from the cache:
 
 ```bash
 rm -rf ~/qortal/rngit/qdn-cache
@@ -278,7 +325,9 @@ git clone rns://DEST_C/devgit/hello clone-c
 ```
 
 This depends on B serving that data to C (B's storage policy) and can take a
-minute while C fetches; the gateway waits up to 60 s per resource.
+minute while C fetches; the gateway waits up to 60 s per resource. With A
+offline the laptop reaches `DEST_C` only if C is also a client of B's gateway
+(step 1).
 
 ## 8. Push flow 2: a push through B is staged
 
@@ -342,10 +391,12 @@ is offline:
 
 ```bash
 ssh devnet-node-2 cat qortal/apikey.txt > ~/rngit-devnet/apikey-b.txt
+test -s ~/rngit-devnet/apikey-b.txt || echo 'API key file is empty: check the node directory path'
 python3 - ~/rngit-devnet/staged-1.json <<'PYEOF'
 import getpass, json, os, sys, urllib.parse, urllib.request
 api = "http://localhost:12491"
 key = open(os.path.expanduser("~/rngit-devnet/apikey-b.txt")).read().strip()
+if not key: sys.exit("~/rngit-devnet/apikey-b.txt is empty: B answers 403 without an API key")
 prepared = json.load(open(sys.argv[1]))
 private_key = getpass.getpass("Base58 private key of P (owner of devgit): ").strip()
 
@@ -499,7 +550,9 @@ afterwards.
 | Symptom | Likely cause |
 |---|---|
 | `rnpath` / `Requesting path...` times out | Laptop interface: wrong `target_port`, or `network_name`/`passphrase` differ from the gateway (interface access codes must match). |
-| `rnpath` finds the others but times out for one rngit node, after the gateway restarted | That node announced before the gateway came back, and the gateway relearns the path only from its next announce. Restart Core on that node (rngit announces about 5 s after start), and set a short `announce_interval` (step 1). |
+| `rnpath` finds the others but times out for one rngit node, after the gateway restarted | The gateway lost that path: it was not in its saved path table or the node's tunnel (a hard kill skips the save on exit, and with a Reticulum library before `1dbe362` a restarted gateway restored no paths at all), and the gateway relearns it only from the next announce. Restart Core on that node (rngit announces about 5 s after start), and set a short `announce_interval` (step 1). |
+| With A offline, `rnpath` times out for `DEST_B` | B is not a gateway, or the laptop config has no `devnet gateway B` interface, or B's firewall blocks the port (step 1, step 2). |
+| With A offline, `rnpath` times out for `DEST_C` only | C is a client of A alone; add B to C's `reticulumBackboneGatewayServers` (step 1). |
 | `rnpath` finds `DEST_A` but times out for `DEST_B`/`DEST_C` | The gateway's Reticulum library predates the path-request fix and never answers for destinations on other nodes; see the workaround in step 2. |
 | `rns-identity-binding.py create` cannot load `client_identity` | Step 2's identity command was not run, or `RNGIT_CONFIG` is not exported in this shell. |
 | `rngit QDN gateway disabled` in log | Core's repository was not available when rngit started; check the log above it. |
